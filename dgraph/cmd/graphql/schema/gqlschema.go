@@ -101,8 +101,10 @@ func postGQLValidation(schema *ast.Schema) gqlerror.List {
 			errs = append(errs, applyFieldValidations(field)...)
 
 			for _, dir := range field.Directives {
-				errs = append(errs,
-					supportedDirectives[dir.Name].validationFunc(typ, field, dir, schema))
+				err := supportedDirectives[dir.Name].validationFunc(typ, field, dir, schema)
+				if err != nil {
+					errs = append(errs, err)
+				}
 			}
 		}
 	}
