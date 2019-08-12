@@ -65,6 +65,7 @@ func NewSchemaHandler(input string) (SchemaHandler, error) {
 		return nil, gqlErrList
 	}
 
+	addDirectives(doc)
 	addScalars(doc)
 
 	sch, gqlErr := validator.ValidateSchemaDocument(doc)
@@ -93,7 +94,7 @@ func genDgSchema(gqlSch *ast.Schema) string {
 	for k := range gqlSch.Types {
 		keys = append(keys, k)
 	}
-	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	sort.Strings(keys)
 
 	for _, key := range keys {
 		def := gqlSch.Types[key]

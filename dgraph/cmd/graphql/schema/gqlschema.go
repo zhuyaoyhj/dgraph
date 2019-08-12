@@ -26,27 +26,30 @@ import (
 )
 
 // Validation functions which will run before gql validation.
-type preGQLCheck func(schema *ast.SchemaDocument) gqlerror.List
+type preGQLCheck func(arg valditionArg) *gqlerror.Error
 
 // Validation functions which will run after gql validation.
-type postGQLCheck func(schema *ast.Schema) gqlerror.List
+type postGQLCheck func(arg valditionArg) *gqlerror.Error
 
-type preGQLRule struct {
-	name        string
-	schRuleFunc preGQLCheck
+type valditionArg struct {
+	defn   *ast.Definition
+	field  *ast.FieldDefinition
+	dir    *ast.Directive
+	sch    *ast.Schema
+	schDoc *ast.SchemaDocument
 }
 
-type postGQLRule struct {
-	name        string
-	schRuleFunc postGQLCheck
-}
-
-var preGQLRules []preGQLRule
-var postGQLRules []postGQLRule
+var defnValidations []preGQLCheck
+var typeValidations, fieldValidations, directiveValidations []postGQLCheck
 
 type scalar struct {
 	name       string
 	dgraphType string
+}
+
+type directive struct {
+	directiveDefn  *ast.DirectiveDefinition
+	validationFunc postGQLCheck
 }
 
 var supportedScalars = map[string]scalar{
@@ -56,6 +59,26 @@ var supportedScalars = map[string]scalar{
 	"Float":    scalar{name: "Float", dgraphType: "float"},
 	"String":   scalar{name: "String", dgraphType: "string"},
 	"DateTime": scalar{name: "DateTime", dgraphType: "dateTime"},
+}
+
+var supportedDirectives = map[string]directive{
+	"hasInverse": directive{
+		directiveDefn: &ast.DirectiveDefinition{
+			Name:      "hasInverse",
+			Locations: []ast.DirectiveLocation{ast.LocationFieldDefinition},
+			Arguments: []*ast.ArgumentDefinition{&ast.ArgumentDefinition{
+				Name: "field",
+				Type: &ast.Type{NamedType: "String", NonNull: true},
+			}},
+		},
+		validationFunc: hasInverseValidation,
+	},
+}
+
+func addDirectives(doc *ast.SchemaDocument) {
+	for _, d := range supportedDirectives {
+		doc.Directives = append(doc.Directives, d.directiveDefn)
+	}
 }
 
 // addScalars adds all the supported scalars in the schema.
@@ -69,27 +92,18 @@ func addScalars(doc *ast.SchemaDocument) {
 	}
 }
 
-// addRule adds a new schema rule to the global array schRules.
-func addPreRule(name string, f preGQLCheck) {
-	preGQLRules = append(preGQLRules, preGQLRule{
-		name:        name,
-		schRuleFunc: f,
-	})
-}
-
-func addPostRule(name string, f postGQLCheck) {
-	postGQLRules = append(postGQLRules, postGQLRule{
-		name:        name,
-		schRuleFunc: f,
-	})
-}
-
 // preGQLValidation validates schema before gql validation
 func preGQLValidation(schema *ast.SchemaDocument) gqlerror.List {
 	var errs []*gqlerror.Error
 
-	for _, rule := range preGQLRules {
-		errs = append(errs, rule.schRuleFunc(schema)...)
+	arg := valditionArg{schDoc: schema}
+	for _, def := range schema.Definitions {
+		arg.defn = def
+		for _, rule := range defnValidations {
+			if err := rule(arg); err != nil {
+				errs = append(errs, err)
+			}
+		}
 	}
 
 	return errs
@@ -99,8 +113,32 @@ func preGQLValidation(schema *ast.SchemaDocument) gqlerror.List {
 func postGQLValidation(schema *ast.Schema) gqlerror.List {
 	var errs []*gqlerror.Error
 
-	for _, rule := range postGQLRules {
-		errs = append(errs, rule.schRuleFunc(schema)...)
+	arg := valditionArg{sch: schema}
+	for _, typ := range schema.Types {
+		arg.defn = typ
+		for _, rule := range typeValidations {
+			if err := rule(arg); err != nil {
+				errs = append(errs, err)
+			}
+		}
+
+		for _, field := range typ.Fields {
+			arg.field = field
+			for _, rule := range fieldValidations {
+				if err := rule(arg); err != nil {
+					errs = append(errs, err)
+				}
+			}
+
+			for _, dir := range field.Directives {
+				arg.dir = dir
+				for _, rule := range directiveValidations {
+					if err := rule(arg); err != nil {
+						errs = append(errs, err)
+					}
+				}
+			}
+		}
 	}
 
 	return errs
@@ -419,8 +457,22 @@ func getIDField(defn *ast.Definition) ast.FieldList {
 	return fldList
 }
 
-func genArgumentsString(args ast.ArgumentDefinitionList) string {
-	if args == nil || len(args) == 0 {
+func genArgumentsDefnString(args ast.ArgumentDefinitionList) string {
+	if len(args) == 0 {
+		return ""
+	}
+
+	var argsStrs []string
+
+	for _, arg := range args {
+		argsStrs = append(argsStrs, genArgumentDefnString(arg))
+	}
+
+	return fmt.Sprintf("(%s)", strings.Join(argsStrs, ", "))
+}
+
+func genArgumentsString(args ast.ArgumentList) string {
+	if len(args) == 0 {
 		return ""
 	}
 
@@ -430,7 +482,7 @@ func genArgumentsString(args ast.ArgumentDefinitionList) string {
 		argsStrs = append(argsStrs, genArgumentString(arg))
 	}
 
-	return fmt.Sprintf("(%s)", strings.Join(argsStrs, ","))
+	return fmt.Sprintf("(%s)", strings.Join(argsStrs, ", "))
 }
 
 func genFieldsString(flds ast.FieldList) string {
@@ -450,14 +502,36 @@ func genFieldsString(flds ast.FieldList) string {
 	return sch.String()
 }
 
+func genDirectivesString(direcs ast.DirectiveList) string {
+	if len(direcs) == 0 {
+		return ""
+	}
+
+	direcArgs := make([]string, 0, len(direcs))
+
+	for _, dir := range direcs {
+		direcArgs = append(
+			direcArgs,
+			fmt.Sprintf("@%s%s", dir.Name, genArgumentsString(dir.Arguments)),
+		)
+	}
+
+	return fmt.Sprintf(" " + strings.Join(direcArgs, " "))
+}
+
 func genFieldString(fld *ast.FieldDefinition) string {
 	return fmt.Sprintf(
-		"\t%s%s: %s\n", fld.Name, genArgumentsString(fld.Arguments), fld.Type.String(),
+		"\t%s%s: %s%s\n", fld.Name, genArgumentsDefnString(fld.Arguments),
+		fld.Type.String(), genDirectivesString(fld.Directives),
 	)
 }
 
-func genArgumentString(arg *ast.ArgumentDefinition) string {
+func genArgumentDefnString(arg *ast.ArgumentDefinition) string {
 	return fmt.Sprintf("%s: %s", arg.Name, arg.Type.String())
+}
+
+func genArgumentString(arg *ast.Argument) string {
+	return fmt.Sprintf("%s: %s", arg.Name, arg.Value.String())
 }
 
 func generateInputString(typ *ast.Definition) string {
@@ -483,10 +557,8 @@ func generateObjectString(typ *ast.Definition) string {
 }
 
 func generateScalarString(typ *ast.Definition) string {
-	var sch strings.Builder
 
-	sch.WriteString(fmt.Sprintf("scalar %s\n", typ.Name))
-	return sch.String()
+	return fmt.Sprintf("scalar %s\n", typ.Name)
 }
 
 // Stringify returns entire schema in string format
