@@ -1,0 +1,25 @@
+goos: linux
+goarch: amd64
+pkg: github.com/dgraph-io/badger/table
+BenchmarkBuilder-16    	       2	 518090850 ns/op	259691552 B/op	 2659257 allocs/op
+BenchmarkBuilder-16    	       2	 505331115 ns/op	259691136 B/op	 2659261 allocs/op
+BenchmarkBuilder-16    	       2	 515433486 ns/op	259690432 B/op	 2659253 allocs/op
+BenchmarkBuilder-16    	       2	 516599663 ns/op	259689360 B/op	 2659252 allocs/op
+BenchmarkBuilder-16    	       2	 512521566 ns/op	259689000 B/op	 2659248 allocs/op
+BenchmarkBuilder-16    	       2	 519285678 ns/op	259689832 B/op	 2659255 allocs/op
+BenchmarkBuilder-16    	       2	 526388363 ns/op	259690104 B/op	 2659258 allocs/op
+BenchmarkBuilder-16    	       2	 517926589 ns/op	259689984 B/op	 2659256 allocs/op
+BenchmarkBuilder-16    	       2	 515338834 ns/op	259689576 B/op	 2659254 allocs/op
+BenchmarkBuilder-16    	       2	 522534601 ns/op	259688944 B/op	 2659248 allocs/op
+BenchmarkBuilder-16    	       2	 516648136 ns/op	259689904 B/op	 2659256 allocs/op
+BenchmarkBuilder-16    	       2	 523008784 ns/op	259689792 B/op	 2659256 allocs/op
+BenchmarkBuilder-16    	       2	 509350975 ns/op	259688504 B/op	 2659243 allocs/op
+BenchmarkBuilder-16    	       2	 518524177 ns/op	259690384 B/op	 2659260 allocs/op
+BenchmarkBuilder-16    	       2	 517142245 ns/op	259689544 B/op	 2659253 allocs/op
+BenchmarkBuilder-16    	       2	 522562419 ns/op	259689856 B/op	 2659256 allocs/op
+BenchmarkBuilder-16    	       2	 509609928 ns/op	259689424 B/op	 2659253 allocs/op
+BenchmarkBuilder-16    	       2	 513510555 ns/op	259689768 B/op	 2659256 allocs/op
+BenchmarkBuilder-16    	       2	 519921933 ns/op	259688784 B/op	 2659245 allocs/op
+BenchmarkBuilder-16    	       2	 521541420 ns/op	259689776 B/op	 2659255 allocs/op
+PASS
+ok  	github.com/dgraph-io/badger/table	31.212s

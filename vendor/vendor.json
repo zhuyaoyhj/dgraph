@@ -465,22 +465,22 @@
 			"revisionTime": "2016-09-07T16:21:46Z"
 		},
 		{
-			"checksumSHA1": "nztM5OYLZA5UhtlAkVemis1eRP4=",
+			"checksumSHA1": "i2509hTDA9JkWR3vM5vAxaHTx8U=",
 			"path": "github.com/dgraph-io/badger",
-			"revision": "cbdef65095c7c34544963f31eb1f7867c49d6725",
-			"revisionTime": "2019-09-17T13:39:22Z"
+			"revision": "f0381beca9f75a31c3443ddc0ff83559474dcf3b",
+			"revisionTime": "2019-10-04T11:24:21Z"
 		},
 		{
-			"checksumSHA1": "On87ObyZ4RLZWWmDtW2M5gY997I=",
+			"checksumSHA1": "mKruBZBmoB//thcySstkKWXSsF0=",
 			"path": "github.com/dgraph-io/badger/options",
-			"revision": "cbdef65095c7c34544963f31eb1f7867c49d6725",
-			"revisionTime": "2019-09-17T13:39:22Z"
+			"revision": "f0381beca9f75a31c3443ddc0ff83559474dcf3b",
+			"revisionTime": "2019-10-04T11:24:21Z"
 		},
 		{
-			"checksumSHA1": "SHnr7a5ZSRsyrAT8Nw1AxDs1UXw=",
+			"checksumSHA1": "us9NR2Z1b5OerJ+SlyVOlG0/jT4=",
 			"path": "github.com/dgraph-io/badger/pb",
-			"revision": "cbdef65095c7c34544963f31eb1f7867c49d6725",
-			"revisionTime": "2019-09-17T13:39:22Z"
+			"revision": "f0381beca9f75a31c3443ddc0ff83559474dcf3b",
+			"revisionTime": "2019-10-04T11:24:21Z"
 		},
 		{
 			"checksumSHA1": "zWLyKFwJcRNWzpvE+QDrsqi9UlE=",
@@ -489,10 +489,10 @@
 			"revisionTime": "2019-09-17T13:39:22Z"
 		},
 		{
-			"checksumSHA1": "cnBwJqnn60NE2pa1hvffhbg2E8Q=",
+			"checksumSHA1": "bhv6krmng7rGbbjuAV3nF88BdxM=",
 			"path": "github.com/dgraph-io/badger/table",
-			"revision": "cbdef65095c7c34544963f31eb1f7867c49d6725",
-			"revisionTime": "2019-09-17T13:39:22Z"
+			"revision": "f0381beca9f75a31c3443ddc0ff83559474dcf3b",
+			"revisionTime": "2019-10-04T11:24:21Z"
 		},
 		{
 			"checksumSHA1": "JxUxrgSrNNTqbX3tqzh3dQIG+uU=",
@@ -501,10 +501,10 @@
 			"revisionTime": "2019-09-17T13:39:22Z"
 		},
 		{
-			"checksumSHA1": "d7+Tg5zhOvzE1lUzK2a+NGLTRAc=",
+			"checksumSHA1": "Phz8dNf7mRBi/KplROobRnfLtD0=",
 			"path": "github.com/dgraph-io/badger/y",
-			"revision": "cbdef65095c7c34544963f31eb1f7867c49d6725",
-			"revisionTime": "2019-09-17T13:39:22Z"
+			"revision": "f0381beca9f75a31c3443ddc0ff83559474dcf3b",
+			"revisionTime": "2019-10-04T11:24:21Z"
 		},
 		{
 			"checksumSHA1": "P4mj7iuJqa7kzIFZeUge++vBMio=",

@@ -1,0 +1,31 @@
+badger 2019/06/20 15:16:38 INFO: 17 tables out of 130 opened in 3.082s
+badger 2019/06/20 15:16:41 INFO: 35 tables out of 130 opened in 6.078s
+badger 2019/06/20 15:16:44 INFO: 58 tables out of 130 opened in 9.161s
+badger 2019/06/20 15:16:47 INFO: 81 tables out of 130 opened in 12.086s
+badger 2019/06/20 15:16:50 INFO: 103 tables out of 130 opened in 15.003s
+badger 2019/06/20 15:16:54 INFO: All 130 tables opened in 18.372s
+badger 2019/06/20 15:16:54 INFO: Replaying file id: 104 at offset: 97850500
+badger 2019/06/20 15:16:54 INFO: Replay took: 5.07µs
+badger 2019/06/20 15:16:54 INFO: Badger.Stream Created batch of size: 8.9 MB in 45.366633ms.
+badger 2019/06/20 15:16:54 INFO: Badger.Stream Created batch of size: 53 MB in 95.257391ms.
+badger 2019/06/20 15:16:54 INFO: Badger.Stream Created batch of size: 4.6 MB in 16.557348ms.
+badger 2019/06/20 15:16:54 INFO: Badger.Stream Created batch of size: 4.6 MB in 3.577923ms.
+badger 2019/06/20 15:16:54 INFO: Badger.Stream Created batch of size: 4.4 MB in 2.313036ms.
+badger 2019/06/20 15:16:54 INFO: Badger.Stream Created batch of size: 49 MB in 147.149351ms.
+badger 2019/06/20 15:16:54 INFO: Badger.Stream Created batch of size: 8.9 MB in 5.29695ms.
+badger 2019/06/20 15:16:55 INFO: Badger.Stream Created batch of size: 4.4 MB in 3.344665ms.
+badger 2019/06/20 15:16:55 INFO: Badger.Stream Time elapsed: 01s, bytes sent: 138 MB, speed: 138 MB/sec
+badger 2019/06/20 15:16:55 INFO: Badger.Stream Created batch of size: 4.4 MB in 3.547313ms.
+badger 2019/06/20 15:16:55 INFO: Badger.Stream Created batch of size: 4.4 MB in 3.915133ms.
+badger 2019/06/20 15:16:55 INFO: Badger.Stream Created batch of size: 4.4 MB in 3.212134ms.
+badger 2019/06/20 15:16:55 INFO: Badger.Stream Created batch of size: 31 MB in 50.402165ms.
+badger 2019/06/20 15:16:55 INFO: Badger.Stream Created batch of size: 18 MB in 15.54µs.
+Total Sampled Keys:  5000000
+starting benchmarking after time:  20.255597674s
+goos: linux
+goarch: amd64
+pkg: github.com/dgraph-io/badger
+BenchmarkRandomGetWithRand/BenchSeek-16         	  100000	     11694 ns/op
+0
+PASS
+ok  	github.com/dgraph-io/badger	22.410s

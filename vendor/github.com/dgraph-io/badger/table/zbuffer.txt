@@ -1,0 +1,10 @@
+goos: linux
+goarch: amd64
+pkg: github.com/dgraph-io/badger/table
+BenchmarkBuilder-16    	       2	 527921308 ns/op	259690376 B/op	 2659254 allocs/op
+BenchmarkBuilder-16    	       2	 522870453 ns/op	259689704 B/op	 2659255 allocs/op
+BenchmarkBuilder-16    	       2	 523489554 ns/op	259689704 B/op	 2659254 allocs/op
+BenchmarkBuilder-16    	       2	 526129561 ns/op	259689296 B/op	 2659250 allocs/op
+BenchmarkBuilder-16    	       2	 520691506 ns/op	259689976 B/op	 2659259 allocs/op
+PASS
+ok  	github.com/dgraph-io/badger/table	7.914s

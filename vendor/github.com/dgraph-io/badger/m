@@ -1,0 +1,32 @@
+badger 2019/06/13 18:36:46 INFO: 37 tables out of 66 opened in 3.02s
+badger 2019/06/13 18:36:48 INFO: All 66 tables opened in 5.041s
+badger 2019/06/13 18:36:48 DEBUG: Value Log Discard stats: map[]
+badger 2019/06/13 18:36:48 INFO: Replaying file id: 106 at offset: 77518779
+badger 2019/06/13 18:36:48 INFO: Replay took: 9.37µs
+badger 2019/06/13 18:36:49 INFO: Badger.Stream Created batch of size: 4.4 MB in 4.860759ms.
+badger 2019/06/13 18:36:49 INFO: Badger.Stream Created batch of size: 62 MB in 376.682507ms.
+badger 2019/06/13 18:36:49 INFO: Badger.Stream Created batch of size: 102 MB in 221.039844ms.
+badger 2019/06/13 18:36:50 INFO: Badger.Stream Created batch of size: 98 MB in 516.352764ms.
+badger 2019/06/13 18:36:52 INFO: Badger.Stream Created batch of size: 200 MB in 1.003705886s.
+badger 2019/06/13 18:36:52 INFO: Badger.Stream Time elapsed: 03s, bytes sent: 466 MB, speed: 156 MB/sec
+badger 2019/06/13 18:36:53 INFO: Badger.Stream Created batch of size: 214 MB in 1.037762785s.
+badger 2019/06/13 18:36:54 INFO: Badger.Stream Created batch of size: 214 MB in 349.971844ms.
+badger 2019/06/13 18:36:56 INFO: Badger.Stream Created batch of size: 285 MB in 1.547181527s.
+badger 2019/06/13 18:36:56 INFO: Badger.Stream Time elapsed: 07s, bytes sent: 1.2 GB, speed: 168 MB/sec
+badger 2019/06/13 18:36:57 INFO: Badger.Stream Created batch of size: 214 MB in 262.223651ms.
+badger 2019/06/13 18:36:57 INFO: Badger.Stream Time elapsed: 08s, bytes sent: 1.4 GB, speed: 174 MB/sec
+badger 2019/06/13 18:36:58 INFO: Badger.Stream Created batch of size: 214 MB in 1.038564251s.
+badger 2019/06/13 18:36:58 INFO: Badger.Stream Time elapsed: 09s, bytes sent: 1.6 GB, speed: 178 MB/sec
+badger 2019/06/13 18:36:58 INFO: Badger.Stream Created batch of size: 214 MB in 107.773937ms.
+badger 2019/06/13 18:36:58 INFO: Badger.Stream Time elapsed: 10s, bytes sent: 1.8 GB, speed: 182 MB/sec
+badger 2019/06/13 18:36:59 INFO: Badger.Stream Created batch of size: 196 MB in 37.25µs.
+badger 2019/06/13 18:36:59 INFO: Badger.Stream Created batch of size: 27 MB in 22.38µs.
+Total Sampled Keys:  50000000
+starting benchmarking after time:  19.642540117s
+goos: linux
+goarch: amd64
+pkg: github.com/dgraph-io/badger
+BenchmarkSeek/BenchSeek-16         	   50000	    333097 ns/op
+2910
+PASS
+ok  	github.com/dgraph-io/badger	45.263s

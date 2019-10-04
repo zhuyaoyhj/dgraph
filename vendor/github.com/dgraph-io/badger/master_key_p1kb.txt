@@ -1,0 +1,25 @@
+badger 2019/06/20 15:17:56 INFO: 18 tables out of 130 opened in 3.037s
+badger 2019/06/20 15:17:59 INFO: 39 tables out of 130 opened in 6.005s
+badger 2019/06/20 15:18:02 INFO: 62 tables out of 130 opened in 9.081s
+badger 2019/06/20 15:18:05 INFO: 84 tables out of 130 opened in 12.198s
+badger 2019/06/20 15:18:08 INFO: 105 tables out of 130 opened in 15.238s
+badger 2019/06/20 15:18:11 INFO: 124 tables out of 130 opened in 18.097s
+badger 2019/06/20 15:18:12 INFO: All 130 tables opened in 18.633s
+badger 2019/06/20 15:18:12 INFO: Replaying file id: 104 at offset: 97850500
+badger 2019/06/20 15:18:12 INFO: Replay took: 4.84µs
+badger 2019/06/20 15:18:12 INFO: Badger.Stream Created batch of size: 4.4 MB in 26.809659ms.
+badger 2019/06/20 15:18:12 INFO: Badger.Stream Created batch of size: 58 MB in 101.087551ms.
+badger 2019/06/20 15:18:12 INFO: Badger.Stream Created batch of size: 4.6 MB in 55.92305ms.
+badger 2019/06/20 15:18:12 INFO: Badger.Stream Created batch of size: 4.6 MB in 7.935075ms.
+badger 2019/06/20 15:18:12 INFO: Badger.Stream Created batch of size: 8.9 MB in 51.581059ms.
+badger 2019/06/20 15:18:13 INFO: Badger.Stream Created batch of size: 53 MB in 129.972364ms.
+badger 2019/06/20 15:18:13 INFO: Badger.Stream Created batch of size: 76 MB in 74.781743ms.
+Total Sampled Keys:  5000000
+starting benchmarking after time:  20.489537676s
+goos: linux
+goarch: amd64
+pkg: github.com/dgraph-io/badger
+BenchmarkKeySeek/BenchSeek-16         	  100000	     15034 ns/op
+0
+PASS
+ok  	github.com/dgraph-io/badger	23.179s
