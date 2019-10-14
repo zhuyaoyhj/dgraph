@@ -147,112 +147,65 @@ func (r *reducer) encodeAndWrite(
 	list := &bpb.KVList{}
 
 	preds := make(map[string]uint32)
-	setStreamId := func(kv *bpb.KV) bool {
+	setStreamId := func(kv *bpb.KV) {
 		pk, err := x.Parse(kv.Key)
 		x.Check(err)
 		x.AssertTrue(len(pk.Attr) > 0)
 
-		var isNew bool
 		// We don't need to consider the data prefix, count prefix, etc. because each predicate
 		// contains sorted keys, the way they are produced.
 		streamId := preds[pk.Attr]
 		if streamId == 0 {
 			streamId = atomic.AddUint32(&r.streamId, 1)
 			preds[pk.Attr] = streamId
-			isNew = true
 		}
 		// TODO: Having many stream ids can cause memory issues with StreamWriter. So, we
 		// should build a way in StreamWriter to indicate that the stream is over, so the
 		// table for that stream can be flushed and memory released.
 		kv.StreamId = streamId
-		return isNew
 	}
 
-	// insertStreamDone := func(l *bpb.KVList) *bpb.KVList {
-	// 	if len(l.Kv) == 0 {
-	// 		return l
-	// 	}
-
-	// 	listWithDone := &bpb.KVList{}
-	// 	listWithDone.Kv = append(listWithDone.Kv, l.Kv[0])
-	// 	for i := 1; i < len(l.Kv); i++ {
-	// 		// Stream has been finished, mark it as done.
-	// 		if l.Kv[i-1].StreamId != l.Kv[i].StreamId {
-	// 			listWithDone.Kv = append(listWithDone.Kv, &bpb.KV{
-	// 				StreamId:   l.Kv[i-1].StreamId,
-	// 				StreamDone: true,
-	// 			})
-	// 		}
-	// 		// } else {
-	// 		// 	listWithDone.Kv = append(listWithDone.Kv, l.Kv[i])
-	// 		// }
-	// 		listWithDone.Kv = append(listWithDone.Kv, l.Kv[i])
-	// 	}
-	// 	return listWithDone
-	// }
-
-	// var prevStreamId uint32
-	// insertStreamDone := func(l *bpb.KVList) *bpb.KVList {
-	// 	listWithDone := &bpb.KVList{}
-	// 	for _, kv := range l.GetKv() {
-	// 		// if prevStreamId != 0 && prevStreamId != kv.StreamId {
-	// 		// 	listWithDone.Kv = append(listWithDone.Kv, &bpb.KV{
-	// 		// 		StreamId:   prevStreamId,
-	// 		// 		StreamDone: true,
-	// 		// 	})
-	// 		// }
-
-	// 		listWithDone.Kv = append(listWithDone.Kv, kv)
-	// 		prevStreamId = kv.StreamId
-	// 	}
-
-	// 	return listWithDone
-	// }
+	insertDone := func(l *bpb.KVList, sids []uint32) *bpb.KVList {
+		for _, id := range sids {
+			l.Kv = append(l.Kv, &bpb.KV{
+				StreamId:   id,
+				StreamDone: true,
+			})
+		}
+		return l
+	}
 
 	var prevStreamId uint32
 	for batch := range entryCh {
 		listSize += r.toList(batch, list)
 		if listSize > 4<<20 {
-			singleStreamList := &bpb.KVList{}
+			sids := make([]uint32, 0, 16)
 			for _, kv := range list.Kv {
-				if setStreamId(kv) && prevStreamId != 0 {
-					singleStreamList.Kv = append(singleStreamList.Kv, &bpb.KV{
-						StreamId:   prevStreamId,
-						StreamDone: true,
-					})
-					x.Check(writer.Write(singleStreamList))
-					singleStreamList = &bpb.KVList{}
+				setStreamId(kv)
+				if prevStreamId != 0 && kv.StreamId != prevStreamId {
+					sids = append(sids, prevStreamId)
 				}
-				singleStreamList.Kv = append(singleStreamList.Kv, kv)
 				prevStreamId = kv.StreamId
 			}
-			// list = insertStreamDone(list)
-			if len(singleStreamList.Kv) > 0 {
-				x.Check(writer.Write(singleStreamList))
-			}
+			list = insertDone(list, sids)
+			x.Check(writer.Write(list))
 			list = &bpb.KVList{}
 			listSize = 0
 		}
 	}
 	if len(list.Kv) > 0 {
-		singleStreamList := &bpb.KVList{}
+		sids := make([]uint32, 0, 16)
 		for _, kv := range list.Kv {
-			if setStreamId(kv) && prevStreamId != 0 {
-				singleStreamList.Kv = append(singleStreamList.Kv, &bpb.KV{
-					StreamId:   prevStreamId,
-					StreamDone: true,
-				})
-				x.Check(writer.Write(singleStreamList))
-				singleStreamList = &bpb.KVList{}
+			setStreamId(kv)
+			if prevStreamId != 0 && kv.StreamId != prevStreamId {
+				sids = append(sids, prevStreamId)
 			}
-			singleStreamList.Kv = append(singleStreamList.Kv, kv)
 			prevStreamId = kv.StreamId
 		}
-		// list = insertStreamDone(list)
+		list = insertDone(list, sids)
 		x.Check(writer.Write(list))
-		if len(singleStreamList.Kv) > 0 {
-			x.Check(writer.Write(singleStreamList))
-		}
+		list = &bpb.KVList{}
+		listSize = 0
 	}
 }
 
