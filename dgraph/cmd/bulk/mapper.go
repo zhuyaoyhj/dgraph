@@ -236,6 +236,16 @@ func (m *mapper) processNQuad(nq gql.NQuad) {
 	}
 }
 
+func (m *mapper) createPredicatePosting(predicate string) *pb.Posting {
+	fp := farm.Fingerprint64([]byte(predicate))
+	return &pb.Posting{
+		Uid:         fp,
+		Value:       []byte(predicate),
+		ValType:     pb.Posting_DEFAULT,
+		PostingType: pb.Posting_VALUE,
+	}
+}
+
 func (m *mapper) uid(xid string) uint64 {
 	if !m.opt.NewUids {
 		if uid, err := strconv.ParseUint(xid, 0, 64); err == nil {
