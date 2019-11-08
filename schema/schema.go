@@ -63,6 +63,13 @@ func (s *state) DeleteAll() {
 	defer s.Unlock()
 
 	for pred := range s.predicate {
+		//yhj-code expand
+		if x.WorkerConfig.ExpandEdge {
+			if pred == "_predicate_" {
+				continue
+			}
+		}
+		//yhj-code end
 		delete(s.predicate, pred)
 	}
 
@@ -442,6 +449,16 @@ func initialSchemaInternal(all bool) []*pb.SchemaUpdate {
 		Tokenizer: []string{"exact"},
 		List:      true,
 	})
+
+	//yhj-code predicate
+	if x.WorkerConfig.ExpandEdge {
+		initialSchema = append(initialSchema, &pb.SchemaUpdate{
+			Predicate: "_predicate_",
+			ValueType: pb.Posting_STRING,
+			List:      true,
+		})
+	}
+	//yhj-code end
 
 	if all || x.WorkerConfig.AclEnabled {
 		// propose the schema update for acl predicates

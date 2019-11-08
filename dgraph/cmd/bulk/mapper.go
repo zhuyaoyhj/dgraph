@@ -227,6 +227,13 @@ func (m *mapper) processNQuad(nq gql.NQuad) {
 		m.addMapEntry(key, rev, shard)
 	}
 	m.addIndexMapEntries(nq, de)
+
+	if m.opt.ExpandEdges {
+		shard := m.state.shards.shardFor("_predicate_")
+		key = x.DataKey("_predicate_", sid)
+		pp := m.createPredicatePosting(nq.Predicate)
+		m.addMapEntry(key, pp, shard)
+	}
 }
 
 func (m *mapper) uid(xid string) uint64 {

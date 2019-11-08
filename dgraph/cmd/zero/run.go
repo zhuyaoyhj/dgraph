@@ -95,6 +95,10 @@ instances to achieve high-availability.
 	// about the status of supporting annotation logs through the datadog exporter
 	flag.String("datadog.collector", "", "Send opencensus traces to Datadog. As of now, the trace"+
 		" exporter does not support annotation logs and would discard them.")
+
+	flag.Bool("expand_edge", true,
+		"Enables the expand() feature. This is very expensive for large data loads because it"+
+			" doubles the number of mutations going on in the system.")
 }
 
 func setupListener(addr string, port int, kind string) (listener net.Listener, err error) {
@@ -169,6 +173,12 @@ func run() {
 		w:                 Zero.Conf.GetString("wal"),
 		rebalanceInterval: Zero.Conf.GetDuration("rebalance_interval"),
 	}
+
+	//yhj-code expand add param for exapndEdge
+	x.WorkerConfig = x.WorkerOptions{
+		ExpandEdge: Zero.Conf.GetBool("expand_edge"),
+	}
+	//yhj-code end
 
 	if opts.numReplicas < 0 || opts.numReplicas%2 == 0 {
 		log.Fatalf("ERROR: Number of replicas must be odd for consensus. Found: %d",

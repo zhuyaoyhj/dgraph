@@ -177,6 +177,10 @@ they form a Raft group and provide synchronous replication.
 	flag.String("custom_tokenizers", "",
 		"Comma separated list of tokenizer plugins")
 
+	flag.Bool("expand_edge", true,
+		"Enables the expand() feature. This is very expensive for large data loads because it"+
+			" doubles the number of mutations going on in the system.")
+
 	// By default Go GRPC traces all requests.
 	grpc.EnableTracing = false
 }
@@ -487,6 +491,7 @@ func run() {
 		AclEnabled:          secretFile != "",
 		SnapshotAfter:       Alpha.Conf.GetInt("snapshot_after"),
 		AbortOlderThan:      abortDur,
+		ExpandEdge:          Alpha.Conf.GetBool("expand_edge"),
 	}
 
 	setupCustomTokenizers()

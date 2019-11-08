@@ -67,6 +67,33 @@ func (w *TxnWriter) Write(kvs *pb.KVList) error {
 	return nil
 }
 
+//yhj-code expand
+
+func (w *TxnWriter) Update(commitTs uint64, f func(txn *badger.Txn) error) error {
+	if commitTs == 0 {
+		return nil
+	}
+	txn := w.db.NewTransactionAt(math.MaxUint64, true)
+	defer txn.Discard()
+
+	err := f(txn)
+	if err == badger.ErrTxnTooBig {
+		// continue to commit.
+	} else if err != nil {
+		return err
+	}
+	w.wg.Add(1)
+	return txn.CommitAt(commitTs, w.cb)
+}
+
+func (w *TxnWriter) Delete(key []byte, ts uint64) error {
+	return w.Update(ts, func(txn *badger.Txn) error {
+		return txn.Delete(key)
+	})
+}
+
+//yhj-code end
+
 func (w *TxnWriter) update(commitTs uint64, f func(txn *badger.Txn) error) error {
 	if commitTs == 0 {
 		return nil

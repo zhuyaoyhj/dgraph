@@ -987,8 +987,51 @@ func rebuildListType(ctx context.Context, rb *IndexRebuild) error {
 
 // DeleteAll deletes all entries in the posting list.
 func DeleteAll() error {
+	//yhj-code expand
+	if x.WorkerConfig.ExpandEdge {
+		return deleteEntries(nil, func(key []byte) bool {
+			pk, err := x.Parse(key)
+			x.Check(err)
+			if pk.Attr == "" {
+				return true
+			} else if pk.IsSchema() {
+				// Don't delete schema for _predicate_
+				_, isInitialPred := x.InitialPreds[pk.Attr]
+				return !isInitialPred
+			}
+			return true
+		})
+	}
+	//yhj-code end
+
 	return pstore.DropAll()
 }
+
+//yhj-code expand
+func deleteEntries(prefix []byte, remove func(key []byte) bool) error {
+	return pstore.View(func(txn *badger.Txn) error {
+		opt := badger.DefaultIteratorOptions
+		opt.Prefix = prefix
+		opt.PrefetchValues = false
+
+		itr := txn.NewIterator(opt)
+		defer itr.Close()
+
+		writer := NewTxnWriter(pstore)
+		for itr.Rewind(); itr.Valid(); itr.Next() {
+			item := itr.Item()
+			if !remove(item.Key()) {
+				continue
+			}
+			if err := writer.Delete(item.KeyCopy(nil), item.Version()); err != nil {
+				return err
+			}
+		}
+		return writer.Flush()
+	})
+}
+
+//yhj-code end
 
 // DeleteData deletes all data but leaves types and schema intact.
 func DeleteData() error {

@@ -52,6 +52,12 @@ func ApplyMutations(ctx context.Context, m *pb.Mutations) (*api.TxnContext, erro
 }
 
 func expandEdges(ctx context.Context, m *pb.Mutations) ([]*pb.DirectedEdge, error) {
+
+	//yhj-code
+	if x.WorkerConfig.ExpandEdge {
+		return expandPredicateEdges(ctx, m)
+	}
+	//yhj-code end
 	edges := make([]*pb.DirectedEdge, 0, 2*len(m.Edges))
 	for _, edge := range m.Edges {
 		x.AssertTrue(edge.Op == pb.DirectedEdge_DEL || edge.Op == pb.DirectedEdge_SET)
@@ -81,6 +87,59 @@ func expandEdges(ctx context.Context, m *pb.Mutations) ([]*pb.DirectedEdge, erro
 
 	return edges, nil
 }
+
+//yhj-code
+func expandPredicateEdges(ctx context.Context, m *pb.Mutations) ([]*pb.DirectedEdge, error) {
+	edges := make([]*pb.DirectedEdge, 0, 2*len(m.Edges))
+	for _, edge := range m.Edges {
+		x.AssertTrue(edge.Op == pb.DirectedEdge_DEL || edge.Op == pb.DirectedEdge_SET)
+
+		var preds []string
+		if edge.Attr != x.Star {
+			preds = []string{edge.Attr}
+		} else {
+			sg := &SubGraph{}
+			sg.DestUIDs = &pb.List{Uids: []uint64{edge.GetEntity()}}
+			sg.ReadTs = m.StartTs
+			valMatrix, err := getNodePredicates(ctx, sg)
+			if err != nil {
+				return nil, err
+			}
+			if len(valMatrix) != 1 {
+				return nil, errors.Errorf("Expected only one list in value matrix while deleting: %v",
+					edge.GetEntity())
+			}
+			for _, tv := range valMatrix[0].Values {
+				if len(tv.Val) > 0 {
+					preds = append(preds, string(tv.Val))
+				}
+			}
+		}
+
+		for _, pred := range preds {
+			edgeCopy := *edge
+			edgeCopy.Attr = pred
+			edges = append(edges, &edgeCopy)
+
+			// We only want to delete the pred from <uid> + <_predicate_> posting list if this is
+			// a SP* deletion operation. Otherwise we just continue.
+			if edge.Op == pb.DirectedEdge_DEL && string(edge.Value) != x.Star {
+				continue
+			}
+
+			e := &pb.DirectedEdge{
+				Op:     edge.Op,
+				Entity: edge.GetEntity(),
+				Attr:   "_predicate_",
+				Value:  []byte(pred),
+			}
+			edges = append(edges, e)
+		}
+	}
+	return edges, nil
+}
+
+//yhj-code end
 
 func verifyUid(ctx context.Context, uid uint64) error {
 	if uid <= worker.MaxLeaseId() {

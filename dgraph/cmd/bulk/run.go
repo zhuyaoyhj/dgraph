@@ -95,6 +95,9 @@ func init() {
 		"Comma separated list of tokenizer plugins")
 	flag.Bool("new_uids", false,
 		"Ignore UIDs in load files and assign new ones.")
+	flag.Bool("expand_edges", true,
+		"Generate edges that allow nodes to be expanded using _predicate_ or expand(...). "+
+			"Disable to increase loading speed.")
 }
 
 func run() {
@@ -119,6 +122,7 @@ func run() {
 		ReduceShards:     Bulk.Conf.GetInt("reduce_shards"),
 		CustomTokenizers: Bulk.Conf.GetString("custom_tokenizers"),
 		NewUids:          Bulk.Conf.GetBool("new_uids"),
+		ExpandEdges:      Bulk.Conf.GetBool("expand_edges"),
 	}
 
 	x.PrintVersion()

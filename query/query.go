@@ -1356,6 +1356,21 @@ func (sg *SubGraph) populateUidValVar(doneVars map[string]varValue, sgPath []*Su
 
 	var v varValue
 	var ok bool
+
+	//yhj-code expand
+	if x.WorkerConfig.ExpandEdge {
+		if sg.Attr == "_predicate_" {
+			// This is a predicates list.
+			doneVars[sg.Params.Var] = varValue{
+				strList: sg.valueMatrix,
+				path:    sgPath,
+				Vals:    make(map[uint64]types.Val),
+			}
+			return nil
+
+		}
+	}
+	//yhj-code end
 	// 1. When count of a predicate is assigned a variable, we store the mapping of uid =>
 	// count(predicate).
 	if len(sg.counts) > 0 {
@@ -1800,6 +1815,13 @@ func recursiveCopy(dst *SubGraph, src *SubGraph) {
 }
 
 func expandSubgraph(ctx context.Context, sg *SubGraph) ([]*SubGraph, error) {
+
+	//yhj-code
+	if x.WorkerConfig.ExpandEdge {
+		return expandPredicateSubgraph(ctx, sg)
+	}
+	//yhj-code end
+
 	span := otrace.FromContext(ctx)
 	stop := x.SpanTimer(span, "expandSubgraph: "+sg.Attr)
 	defer stop()
@@ -1807,6 +1829,20 @@ func expandSubgraph(ctx context.Context, sg *SubGraph) ([]*SubGraph, error) {
 	out := make([]*SubGraph, 0, len(sg.Children))
 	for i := 0; i < len(sg.Children); i++ {
 		child := sg.Children[i]
+
+		//yhj-code expandedge
+		if x.WorkerConfig.ExpandEdge {
+			if !x.WorkerConfig.ExpandEdge && child.Attr == "_predicate_" {
+				return out,
+					fmt.Errorf("Cannot ask for _predicate_ when ExpandEdge(--expand_edge) is false.")
+			}
+
+			if !x.WorkerConfig.ExpandEdge {
+				return out,
+					fmt.Errorf("Cannot run expand() query when ExpandEdge(--expand_edge) is false.")
+			}
+		}
+		//yhj-code end
 
 		if child.Params.Expand == "" {
 			out = append(out, child)
@@ -1868,6 +1904,140 @@ func expandSubgraph(ctx context.Context, sg *SubGraph) ([]*SubGraph, error) {
 	}
 	return out, nil
 }
+
+//yhj-code
+
+func expandPredicateSubgraph(ctx context.Context, sg *SubGraph) ([]*SubGraph, error) {
+	span := otrace.FromContext(ctx)
+	stop := x.SpanTimer(span, "expandSubgraph: "+sg.Attr)
+	defer stop()
+
+	var err error
+	out := make([]*SubGraph, 0, len(sg.Children))
+	for i := 0; i < len(sg.Children); i++ {
+		child := sg.Children[i]
+
+		/*if !worker.Config.ExpandEdge && child.Attr == "_predicate_" {
+			return out,
+				errors.Errorf("Cannot ask for _predicate_ when ExpandEdge(--expand_edge) is false.")
+		}*/
+
+		if child.Params.Expand == "" {
+			out = append(out, child)
+			continue
+		}
+
+		/*if !worker.Config.ExpandEdge {
+			return out,
+				errors.Errorf("Cannot run expand() query when ExpandEdge(--expand_edge) is false.")
+		}*/
+
+		var preds []string
+		switch child.Params.Expand {
+		// It could be expand(_all_), expand(_forward_), expand(_reverse_) or expand(val(x)).
+		case "_all_":
+			span.Annotate(nil, "expand(_all_)")
+			// Get the predicate list for expansion.
+			child.ExpandPreds, err = getNodePredicates(ctx, sg)
+			if err != nil {
+				return out, err
+			}
+			preds = uniquePredicatePreds(child.ExpandPreds)
+
+			rpreds, err := getReversePredicates(ctx, preds)
+			if err != nil {
+				return out, err
+			}
+			preds = append(preds, rpreds...)
+		case "_forward_":
+			span.Annotate(nil, "expand(_forward_)")
+			child.ExpandPreds, err = getNodePredicates(ctx, sg)
+			if err != nil {
+				return out, err
+			}
+			preds = uniquePredicatePreds(child.ExpandPreds)
+		case "_reverse_":
+			span.Annotate(nil, "expand(_reverse_)")
+			rpreds, err := getReversePredicates(ctx, preds)
+			if err != nil {
+				return out, err
+			}
+			preds = rpreds
+		default:
+			span.Annotate(nil, "expand default")
+			// We already have the predicates populated from the var.
+			preds = uniquePredicatePreds(child.ExpandPreds)
+		}
+
+		for _, pred := range preds {
+			temp := &SubGraph{
+				ReadTs: sg.ReadTs,
+				Attr:   pred,
+			}
+			temp.Params = child.Params
+			temp.Params.ExpandAll = child.Params.Expand == "_all_"
+			temp.Params.ParentVars = make(map[string]varValue)
+			for k, v := range child.Params.ParentVars {
+				temp.Params.ParentVars[k] = v
+			}
+			temp.Params.IsInternal = false
+			temp.Params.Expand = ""
+			temp.Params.Facet = &pb.FacetParams{AllKeys: true}
+
+			// Go through each child, create a copy and attach to temp.Children.
+			for _, cc := range child.Children {
+				s := &SubGraph{}
+				recursiveCopy(s, cc)
+				temp.Children = append(temp.Children, s)
+			}
+
+			for _, ch := range sg.Children {
+				if ch.isSimilar(temp) {
+					return out, errors.Errorf("Repeated subgraph: [%s] while using expand()", ch.Attr)
+				}
+			}
+			out = append(out, temp)
+		}
+	}
+	return out, nil
+}
+
+func uniquePredicatePreds(vl []*pb.ValueList) []string {
+	predMap := make(map[string]struct{})
+
+	for _, l := range vl {
+		for _, v := range l.Values {
+			if len(v.Val) > 0 {
+				predMap[string(v.Val)] = struct{}{}
+			}
+		}
+	}
+
+	preds := make([]string, 0, len(predMap))
+	for pred := range predMap {
+		preds = append(preds, pred)
+	}
+	return preds
+}
+
+func getNodePredicates(ctx context.Context, sg *SubGraph) ([]*pb.ValueList, error) {
+	temp := &SubGraph{
+		Attr:    "_predicate_",
+		SrcUIDs: sg.DestUIDs,
+		ReadTs:  sg.ReadTs,
+	}
+	taskQuery, err := createTaskQuery(temp)
+	if err != nil {
+		return nil, err
+	}
+	result, err := worker.ProcessTaskOverNetwork(ctx, taskQuery)
+	if err != nil {
+		return nil, err
+	}
+	return result.ValueMatrix, nil
+}
+
+//yhj-code end
 
 // ProcessGraph processes the SubGraph instance accumulating result for the query
 // from different instances. Note: taskQuery is nil for root node.

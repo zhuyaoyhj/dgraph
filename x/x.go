@@ -54,6 +54,16 @@ import (
 var (
 	// ErrNotSupported is thrown when an enterprise feature is requested in the open source version.
 	ErrNotSupported = errors.Errorf("Feature available only in Dgraph Enterprise Edition")
+
+	//yhj-code expand
+	InitialPreds = map[string]struct{}{
+		"_predicate_":       {},
+		"dgraph.xid":        {},
+		"dgraph.password":   {},
+		"dgraph.user.group": {},
+		"dgraph.group.acl":  {},
+	}
+	//yhj-code end
 )
 
 const (

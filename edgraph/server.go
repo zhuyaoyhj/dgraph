@@ -489,6 +489,22 @@ func (s *Server) doMutate(ctx context.Context, req *api.Request, authorize int) 
 	if err != nil {
 		return resp, err
 	}
+
+	//yhj-code expandedge
+	if x.WorkerConfig.ExpandEdge {
+		for _, v := range gmu.Set {
+			if v.Predicate == "_predicate_" {
+				return resp, fmt.Errorf("can't modify _predicate_")
+			}
+		}
+		for _, v := range gmu.Del {
+			if v.Predicate == "_predicate_" {
+				return resp, fmt.Errorf("can't modify _predicate_")
+			}
+		}
+	}
+	//yhj-code end
+
 	parsingTime += time.Since(startParsingTime)
 
 	if authorize == NeedAuthorize {

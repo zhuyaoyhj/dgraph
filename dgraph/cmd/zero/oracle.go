@@ -17,6 +17,7 @@
 package zero
 
 import (
+	"fmt"
 	"math/rand"
 	"strconv"
 	"strings"
@@ -344,6 +345,15 @@ func (s *Server) commit(ctx context.Context, src *api.TxnContext) error {
 	checkPreds := func() error {
 		// Check if any of these tablets is being moved. If so, abort the transaction.
 		preds := make(map[string]struct{})
+
+		//yhj-code expand
+		if x.WorkerConfig.ExpandEdge {
+			if tablet := s.ServingTablet("_predicate_"); tablet != nil {
+				pkey := fmt.Sprintf("%d-_predicate_", tablet.GroupId)
+				preds[pkey] = struct{}{}
+			}
+		}
+		//yhj-code end
 
 		for _, k := range src.Preds {
 			preds[k] = struct{}{}
