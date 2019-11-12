@@ -97,7 +97,15 @@ func DgraphClientDropAll(serviceAddr string) (*dgo.Dgraph, error) {
 // It is intended to be called from TestMain() to establish a Dgraph connection shared
 // by all tests, so there is no testing.T instance for it to use.
 func DgraphClientWithGroot(serviceAddr string) (*dgo.Dgraph, error) {
-	dg, err := DgraphClient(serviceAddr)
+	conn, err := grpc.Dial(serviceAddr, grpc.WithInsecure())
+	if err != nil {
+		return nil, err
+	}
+
+	dg := dgo.NewDgraphClient(api.NewDgraphClient(conn))
+	return dg, nil
+	//yhj-code close groot
+	/*dg, err := DgraphClient(serviceAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +120,8 @@ func DgraphClientWithGroot(serviceAddr string) (*dgo.Dgraph, error) {
 		time.Sleep(time.Second)
 	}
 
-	return dg, err
+	return dg, err*/
+	//yhj-code end
 }
 
 // DgraphClient creates a Dgraph client.
