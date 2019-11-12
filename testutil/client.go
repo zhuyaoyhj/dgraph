@@ -205,6 +205,10 @@ type LoginParams struct {
 // and returns the access JWT and refresh JWT extracted from
 // the HTTP response
 func HttpLogin(params *LoginParams) (string, string, error) {
+	//yhj-code close Login
+	return "", "", nil
+	//yhj-code end
+
 	loginPayload := api.LoginRequest{}
 	if len(params.RefreshJwt) > 0 {
 		loginPayload.RefreshToken = params.RefreshJwt
