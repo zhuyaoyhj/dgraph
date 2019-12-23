@@ -22,11 +22,10 @@ import (
 	"log"
 	"math"
 	"sort"
-	"sync"
 
 	"github.com/dgryski/go-farm"
 
-	bpb "github.com/dgraph-io/badger/pb"
+	bpb "github.com/dgraph-io/badger/v2/pb"
 	"github.com/dgraph-io/dgo/v2/protos/api"
 	"github.com/dgraph-io/dgraph/algo"
 	"github.com/dgraph-io/dgraph/codec"
@@ -121,6 +120,11 @@ func (it *pIterator) init(l *List, afterUid, deleteBelowTs uint64) error {
 
 	it.afterUid = afterUid
 	it.deleteBelowTs = deleteBelowTs
+	if deleteBelowTs > 0 {
+		// We don't need to iterate over the immutable layer if this is > 0. Returning here would
+		// mean it.uids is empty and valid() would return false.
+		return nil
+	}
 
 	it.uidPosting = &pb.Posting{}
 	it.dec = &codec.Decoder{Pack: it.plist.Pack}
@@ -227,12 +231,15 @@ func (it *pIterator) valid() (bool, error) {
 		return true, nil
 	}
 
-	if err := it.moveToNextValidPart(); err != nil {
+	err := it.moveToNextValidPart()
+	switch {
+	case err != nil:
 		return false, err
-	} else if len(it.uids) > 0 {
+	case len(it.uids) > 0:
 		return true, nil
+	default:
+		return false, nil
 	}
-	return false, nil
 }
 
 func (it *pIterator) posting() *pb.Posting {
@@ -263,25 +270,26 @@ type ListOptions struct {
 // NewPosting takes the given edge and returns its equivalent representation as a posting.
 func NewPosting(t *pb.DirectedEdge) *pb.Posting {
 	var op uint32
-	if t.Op == pb.DirectedEdge_SET {
+	switch t.Op {
+	case pb.DirectedEdge_SET:
 		op = Set
-	} else if t.Op == pb.DirectedEdge_DEL {
+	case pb.DirectedEdge_DEL:
 		op = Del
-	} else {
+	default:
 		x.Fatalf("Unhandled operation: %+v", t)
 	}
 
 	var postingType pb.Posting_PostingType
-	if len(t.Lang) > 0 {
+	switch {
+	case len(t.Lang) > 0:
 		postingType = pb.Posting_VALUE_LANG
-	} else if t.ValueId == 0 {
+	case t.ValueId == 0:
 		postingType = pb.Posting_VALUE
-	} else {
+	default:
 		postingType = pb.Posting_REF
 	}
 
-	p := postingPool.Get().(*pb.Posting)
-	*p = pb.Posting{
+	p := &pb.Posting{
 		Uid:         t.ValueId,
 		Value:       t.Value,
 		ValType:     t.ValueType,
@@ -307,14 +315,19 @@ func (l *List) updateMutationLayer(mpost *pb.Posting) {
 	if hasDeleteAll(mpost) {
 		plist := &pb.PostingList{}
 		plist.Postings = append(plist.Postings, mpost)
+		if l.mutationMap == nil {
+			l.mutationMap = make(map[uint64]*pb.PostingList)
+		}
 		l.mutationMap[mpost.StartTs] = plist
 		return
 	}
-
 	plist, ok := l.mutationMap[mpost.StartTs]
 	if !ok {
 		plist := &pb.PostingList{}
 		plist.Postings = append(plist.Postings, mpost)
+		if l.mutationMap == nil {
+			l.mutationMap = make(map[uint64]*pb.PostingList)
+		}
 		l.mutationMap[mpost.StartTs] = plist
 		return
 	}
@@ -346,9 +359,10 @@ func fingerprintEdge(t *pb.DirectedEdge) uint64 {
 	var id uint64 = math.MaxUint64
 
 	// Value with a lang type.
-	if len(t.Lang) > 0 {
+	switch {
+	case len(t.Lang) > 0:
 		id = farm.Fingerprint64([]byte(t.Lang))
-	} else if schema.State().IsList(t.Attr) {
+	case schema.State().IsList(t.Attr):
 		// TODO - When values are deleted for list type, then we should only delete the UID from
 		// index if no other values produces that index token.
 		// Value for list type.
@@ -357,63 +371,10 @@ func fingerprintEdge(t *pb.DirectedEdge) uint64 {
 	return id
 }
 
-// canMutateUid returns an error if all the following conditions are met.
-// * Predicate is of type UidID.
-// * Predicate is not set to a list of UIDs in the schema.
-// * The existing posting list has an entry that does not match the proposed
-//   mutation's UID.
-// In this case, the user should delete the existing predicate and retry, or mutate
-// the schema to allow for multiple UIDs. This method is necessary to support UID
-// predicates with single values because previously all UID predicates were
-// considered lists.
-// This functions returns a nil error in all other cases.
-func (l *List) canMutateUid(txn *Txn, edge *pb.DirectedEdge) error {
-	l.AssertRLock()
-
-	if types.TypeID(edge.ValueType) != types.UidID {
-		return nil
-	}
-
-	if schema.State().IsList(edge.Attr) {
-		return nil
-	}
-
-	return l.iterate(txn.StartTs, 0, func(obj *pb.Posting) error {
-		if obj.Uid != edge.GetValueId() {
-			return errors.Errorf(
-				"cannot add value with uid %x to predicate %s because one of the existing "+
-					"values does not match this uid, either delete the existing values first or "+
-					"modify the schema to '%s: [uid]'",
-				edge.GetValueId(), edge.Attr, edge.Attr)
-		}
-		return nil
-	})
-}
-
 func (l *List) addMutation(ctx context.Context, txn *Txn, t *pb.DirectedEdge) error {
 	l.Lock()
 	defer l.Unlock()
 	return l.addMutationInternal(ctx, txn, t)
-}
-
-var postingPool = &sync.Pool{
-	New: func() interface{} {
-		return &pb.Posting{}
-	},
-}
-
-func (l *List) release() {
-	fromList := func(list *pb.PostingList) {
-		for _, p := range list.GetPostings() {
-			postingPool.Put(p)
-		}
-	}
-	fromList(l.plist)
-	for _, plist := range l.mutationMap {
-		fromList(plist)
-	}
-	l.plist = nil
-	l.mutationMap = nil
 }
 
 func (l *List) addMutationInternal(ctx context.Context, txn *Txn, t *pb.DirectedEdge) error {
@@ -506,6 +467,9 @@ func (l *List) setMutation(startTs uint64, data []byte) {
 	x.Check(pl.Unmarshal(data))
 
 	l.Lock()
+	if l.mutationMap == nil {
+		l.mutationMap = make(map[uint64]*pb.PostingList)
+	}
 	l.mutationMap[startTs] = pl
 	l.Unlock()
 }
@@ -616,17 +580,22 @@ func (l *List) iterate(readTs uint64, afterUid uint64, f func(obj *pb.Posting) e
 	if err != nil {
 		return err
 	}
+
+loop:
 	for err == nil {
 		if midx < mlen {
 			mp = mposts[midx]
 		} else {
 			mp = emptyPosting
 		}
-		if valid, err := pitr.valid(); err != nil {
-			return err
-		} else if valid {
+
+		valid, err := pitr.valid()
+		switch {
+		case err != nil:
+			break loop
+		case valid:
 			pp = pitr.posting()
-		} else {
+		default:
 			pp = emptyPosting
 		}
 
@@ -641,23 +610,33 @@ func (l *List) iterate(readTs uint64, afterUid uint64, f func(obj *pb.Posting) e
 		case mp.Uid == 0 || (pp.Uid > 0 && pp.Uid < mp.Uid):
 			// Either mp is empty, or pp is lower than mp.
 			err = f(pp)
-			if err := pitr.next(); err != nil {
-				return err
+			if err != nil {
+				break loop
+			}
+
+			if err = pitr.next(); err != nil {
+				break loop
 			}
 		case pp.Uid == 0 || (mp.Uid > 0 && mp.Uid < pp.Uid):
 			// Either pp is empty, or mp is lower than pp.
 			if mp.Op != Del {
 				err = f(mp)
+				if err != nil {
+					break loop
+				}
 			}
 			prevUid = mp.Uid
 			midx++
 		case pp.Uid == mp.Uid:
 			if mp.Op != Del {
 				err = f(mp)
+				if err != nil {
+					break loop
+				}
 			}
 			prevUid = mp.Uid
-			if err := pitr.next(); err != nil {
-				return err
+			if err = pitr.next(); err != nil {
+				break loop
 			}
 			midx++
 		default:
@@ -810,16 +789,10 @@ func (l *List) rollup(readTs uint64) (*rollupOutput, error) {
 	var startUid, endUid uint64
 	var splitIdx int
 
-	// Method to properly initialize all the variables described above.
-	init := func() {
+	// Method to properly initialize the variables above
+	// when a multi-part list boundary is crossed.
+	initializeSplit := func() {
 		enc = codec.Encoder{BlockSize: blockSize}
-
-		// If not a multi-part list, all UIDs go to the same encoder.
-		if len(l.plist.Splits) == 0 {
-			plist = out.plist
-			endUid = math.MaxUint64
-			return
-		}
 
 		// Otherwise, load the corresponding part and set endUid to correctly
 		// detect the end of the list.
@@ -833,14 +806,21 @@ func (l *List) rollup(readTs uint64) (*rollupOutput, error) {
 		plist = &pb.PostingList{}
 	}
 
-	init()
+	// If not a multi-part list, all UIDs go to the same encoder.
+	if len(l.plist.Splits) == 0 {
+		plist = out.plist
+		endUid = math.MaxUint64
+	} else {
+		initializeSplit()
+	}
+
 	err := l.iterate(readTs, 0, func(p *pb.Posting) error {
 		if p.Uid > endUid {
 			plist.Pack = enc.Done()
 			out.parts[startUid] = plist
 
 			splitIdx++
-			init()
+			initializeSplit()
 		}
 
 		enc.Add(p.Uid)
@@ -1015,6 +995,13 @@ func (l *List) ValueFor(readTs uint64, langs []string) (rval types.Val, rerr err
 	return valueToTypesVal(p), nil
 }
 
+// PostingFor returns the posting according to the preferred language list.
+func (l *List) PostingFor(readTs uint64, langs []string) (p *pb.Posting, rerr error) {
+	l.RLock()
+	defer l.RUnlock()
+	return l.postingFor(readTs, langs)
+}
+
 func (l *List) postingFor(readTs uint64, langs []string) (p *pb.Posting, rerr error) {
 	l.AssertRLock() // Avoid recursive locking by asserting a lock here.
 	return l.postingForLangs(readTs, langs)
@@ -1039,7 +1026,7 @@ func valueToTypesVal(p *pb.Posting) (rval types.Val) {
 	return
 }
 
-func (l *List) postingForLangs(readTs uint64, langs []string) (pos *pb.Posting, rerr error) {
+func (l *List) postingForLangs(readTs uint64, langs []string) (*pb.Posting, error) {
 	l.AssertRLock()
 
 	any := false
@@ -1049,22 +1036,25 @@ func (l *List) postingForLangs(readTs uint64, langs []string) (pos *pb.Posting, 
 			any = true
 			break
 		}
-		pos, rerr = l.postingForTag(readTs, lang)
-		if rerr == nil {
+		pos, err := l.postingForTag(readTs, lang)
+		if err == nil {
 			return pos, nil
 		}
 	}
 
 	// look for value without language
 	if any || len(langs) == 0 {
-		if found, pos, err := l.findPosting(readTs, math.MaxUint64); err != nil {
+		found, pos, err := l.findPosting(readTs, math.MaxUint64)
+		switch {
+		case err != nil:
 			return nil, err
-		} else if found {
+		case found:
 			return pos, nil
 		}
 	}
 
 	var found bool
+	var pos *pb.Posting
 	// last resort - return value with smallest lang UID.
 	if any {
 		err := l.iterate(readTs, 0, func(p *pb.Posting) error {

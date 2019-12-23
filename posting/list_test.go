@@ -26,8 +26,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/dgraph-io/badger"
-	bpb "github.com/dgraph-io/badger/pb"
+	"github.com/dgraph-io/badger/v2"
+	bpb "github.com/dgraph-io/badger/v2/pb"
 	"github.com/stretchr/testify/require"
 
 	"github.com/dgraph-io/dgraph/protos/pb"
@@ -60,11 +60,12 @@ func checkUids(t *testing.T, l *List, uids []uint64, readTs uint64) {
 }
 
 func addMutationHelper(t *testing.T, l *List, edge *pb.DirectedEdge, op uint32, txn *Txn) {
-	if op == Del {
+	switch op {
+	case Del:
 		edge.Op = pb.DirectedEdge_DEL
-	} else if op == Set {
+	case Set:
 		edge.Op = pb.DirectedEdge_SET
-	} else {
+	default:
 		x.Fatalf("Unhandled op: %v", op)
 	}
 	err := l.addMutation(context.Background(), txn, edge)

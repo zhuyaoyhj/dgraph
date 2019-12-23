@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dgraph-io/badger/y"
+	"github.com/dgraph-io/badger/v2/y"
 	"github.com/dgraph-io/dgo/v2/protos/api"
 	"github.com/dgraph-io/dgraph/protos/pb"
 	"github.com/dgraph-io/dgraph/x"
@@ -61,7 +61,7 @@ func (o *Oracle) Init() {
 	o.keyCommit = make(map[string]uint64)
 	o.subscribers = make(map[int]chan pb.OracleDelta)
 	o.updates = make(chan *pb.OracleDelta, 100000) // Keeping 1 second worth of updates.
-	o.doneUntil.Init(nil)
+	o.doneUntil.Init(nil, true)
 	go o.sendDeltasToSubscribers()
 }
 
@@ -511,15 +511,14 @@ func (s *Server) Timestamps(ctx context.Context, num *pb.Num) (*pb.AssignedIds, 
 	reply, err := s.lease(ctx, num, true)
 	span.Annotatef(nil, "Response: %+v. Error: %v", reply, err)
 
-	if err == nil {
+	switch err {
+	case nil:
 		s.orc.doneUntil.Done(x.Max(reply.EndId, reply.ReadOnly))
 		go s.orc.storePending(reply)
-
-	} else if err == errServedFromMemory {
+	case errServedFromMemory:
 		// Avoid calling doneUntil.Done, and storePending.
 		err = nil
-
-	} else {
+	default:
 		glog.Errorf("Got error: %v while leasing timestamps: %+v", err, num)
 	}
 	return reply, err

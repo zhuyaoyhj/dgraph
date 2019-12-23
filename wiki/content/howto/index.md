@@ -121,6 +121,7 @@ $ curl localhost:8080/alter -d '
 $ curl -H "Content-Type: application/rdf" localhost:8080/mutate?commitNow=true -d '{
   set {
     _:dgraph <name> "Dgraph" .
+    _:dgraph <dgraph.type> "Software" .
     _:dgraph <url> "https://github.com/dgraph-io/dgraph" .
     _:dgraph <description> "Fast, Transactional, Distributed Graph Database." .
   }
@@ -131,6 +132,7 @@ $ curl -H "Content-Type: application/rdf" localhost:8080/mutate?commitNow=true -
 $ curl -H "Content-Type: application/rdf" localhost:8080/mutate?commitNow=true -d '{
   set {
     _:badger <name> "Badger" .
+    _:badger <dgraph.type> "Software" .
     _:badger <url> "https://github.com/dgraph-io/badger" .
     _:badger <description> "Embeddable, persistent and fast key-value (KV) database written in pure Go." .
   }
@@ -366,53 +368,7 @@ $ dgraph increment
 ## Giving Nodes a Type
 
 It's often useful to give the nodes in a graph *types* (also commonly referred
-to as *labels* or *kinds*).
-
-This allows you to do lots of useful things. For example:
-
-- Search for all nodes of a certain type in the root function.
-
-- Filter nodes to only be of a certain kind.
-
-- Enable easier exploration and understanding of a dataset. Graphs are easier
-  to grok when there's an explicit type for each node, since there's a clearer
-expectation about what predicates it may or may not have.
-
-- Allow users coming from traditional SQL-like RDBMSs will feel more at home;
-  traditional tables naturally map to node types.
-
-The best solution for adding node kinds is to associate each type of node with
-a particular predicate. E.g. type *foo* is associated with a predicate `foo`,
-and type *bar* is associated with a predicate `bar`. The schema doesn't matter
-too much. I can be left as the default schema, and the value given to it can
-just be `""`.
-
-The [`has`](http://localhost:1313/query-language/#has) function can be used for
-both searching at the query root and filtering inside the query.
-
-To search for all *foo* nodes, follow a predicate, then filter for only *bar*
-nodes:
-```json
-{
-  q(func: has(foo)) {
-    pred @filter(bar) {
-      ...
-    }
-  }
-}
-```
-
-Another approach is to have a `type` predicate with schema type `string`,
-indexed with the `exact` tokenizer. `eq(type, "foo")` and `@filter(eq(type,
-"foo"))` can be used to search and filter. **This second approach has some
-serious drawbacks** (especially since the introduction of transactions in
-v0.9).  It's **recommended instead to use the first approach.**
-
-The first approach has better scalability properties. Because it uses many
-predicates rather than just one, it allows better predicate balancing on
-multi-node clusters. The second approach will also result in an increased
-transaction abortion rate, since every typed node creation would result in
-writing to the `type` index.
+to as *labels* or *kinds*). You can do so using the [type system]({{< relref "query-language/index.md#type-system" >}}).
 
 ## Loading CSV Data
 
@@ -915,6 +871,7 @@ Before (in Dgraph v1.0)
 curl -H 'X-Dgraph-CommitNow: true' localhost:8080/mutate -d '{
   set {
     _:n <name> "Alice" .
+    _:n <dgraph.type> "Person" .
   }
 }'
 ```
@@ -925,6 +882,7 @@ Now (in Dgraph v1.1):
 curl -H 'Content-Type: application/rdf' localhost:8080/mutate?commitNow=true -d '{
   set {
     _:n <name> "Alice" .
+    _:n <dgraph.type> "Person" .
   }
 }'
 ```

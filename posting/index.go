@@ -28,8 +28,8 @@ import (
 	ostats "go.opencensus.io/stats"
 	otrace "go.opencensus.io/trace"
 
-	"github.com/dgraph-io/badger"
-	bpb "github.com/dgraph-io/badger/pb"
+	"github.com/dgraph-io/badger/v2"
+	bpb "github.com/dgraph-io/badger/v2/pb"
 	"github.com/dgraph-io/dgraph/protos/pb"
 	"github.com/dgraph-io/dgraph/schema"
 	"github.com/dgraph-io/dgraph/tok"
@@ -316,10 +316,6 @@ func (txn *Txn) addMutationHelper(ctx context.Context, l *List, doUpdateIndex bo
 		span := otrace.FromContext(ctx)
 		span.Annotatef([]otrace.Attribute{otrace.BoolAttribute("slow-lock", true)},
 			"Acquired lock %v %v %v", dur, t.Attr, t.Entity)
-	}
-
-	if err := l.canMutateUid(txn, t); err != nil {
-		return val, found, emptyCountParams, err
 	}
 
 	if doUpdateIndex {

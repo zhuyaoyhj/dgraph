@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dgraph-io/badger/y"
+	"github.com/dgraph-io/badger/v2/y"
 	"github.com/dgraph-io/dgo/v2/protos/api"
 	"github.com/dgraph-io/dgraph/protos/pb"
 	"github.com/dgraph-io/dgraph/x"
@@ -44,7 +44,7 @@ var (
 // worker instances.  Right now it just holds one of them.
 type Pool struct {
 	sync.RWMutex
-	// A pool now consists of one connection.  gRPC uses HTTP2 transport to combine
+	// A pool now consists of one connection. gRPC uses HTTP2 transport to combine
 	// messages in the same TCP stream.
 	conn *grpc.ClientConn
 
@@ -145,7 +145,7 @@ func (p *Pools) Connect(addr string) *Pool {
 		go pool.shutdown() // Not being used, so release the resources.
 		return existingPool
 	}
-	glog.Infof("CONNECTED to %v\n", addr)
+	glog.Infof("CONNECTING to %s\n", addr)
 	p.all[addr] = pool
 	return pool
 }
@@ -178,7 +178,9 @@ func (p *Pool) Get() *grpc.ClientConn {
 func (p *Pool) shutdown() {
 	glog.Warningf("Shutting down extra connection to %s", p.Addr)
 	p.closer.SignalAndWait()
-	p.conn.Close()
+	if err := p.conn.Close(); err != nil {
+		glog.Warningf("Could not close pool connection with error: %s", err)
+	}
 }
 
 // SetUnhealthy marks a pool as unhealthy.

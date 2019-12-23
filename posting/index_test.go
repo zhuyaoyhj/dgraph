@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dgraph-io/badger"
+	"github.com/dgraph-io/badger/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/dgraph-io/dgraph/protos/pb"
@@ -140,11 +140,12 @@ func TestIndexingAliasedLang(t *testing.T) {
 
 func addMutation(t *testing.T, l *List, edge *pb.DirectedEdge, op uint32,
 	startTs uint64, commitTs uint64, index bool) {
-	if op == Del {
+	switch op {
+	case Del:
 		edge.Op = pb.DirectedEdge_DEL
-	} else if op == Set {
+	case Set:
 		edge.Op = pb.DirectedEdge_SET
-	} else {
+	default:
 		x.Fatalf("Unhandled op: %v", op)
 	}
 	txn := Oracle().RegisterStartTs(startTs)

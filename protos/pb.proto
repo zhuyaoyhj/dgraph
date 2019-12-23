@@ -25,7 +25,7 @@ syntax = "proto3";
 package pb;
 
 import "api.proto";
-import "github.com/dgraph-io/badger/pb/pb.proto";
+import "github.com/dgraph-io/badger/v2/pb/pb.proto";
 
 /* import "gogoproto/gogo.proto"; */
 
@@ -130,6 +130,7 @@ message Member {
 	uint64 last_update = 6;
 
 	bool cluster_info_only = 13;
+	bool force_group_id = 14;
 }
 
 message Group {
@@ -219,6 +220,24 @@ message Mutations {
 	}
 	DropOp drop_op = 7;
 	string drop_value = 8;
+
+	Metadata metadata = 9;
+}
+
+message Metadata {
+  // HintType represents a hint that will be passed along the mutation and used
+  // to add the predicate to the schema if it's not already there.
+  enum HintType {
+    // DEFAULT means no hint is provided and Dgraph will follow the default behavior.
+    DEFAULT = 0;
+    // SINGLE signals that the predicate should be created as a single type (e.g string, uid).
+    SINGLE = 1;
+    // LIST signals that the predicate should be created as a list (e.g [string], [uid]).
+    LIST = 2;
+  }
+
+  // Map of predicates to their hints.
+	map<string, HintType> pred_hints = 1;
 }
 
 message Snapshot {

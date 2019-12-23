@@ -23,7 +23,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dgraph-io/badger"
+	"github.com/dgraph-io/badger/v2"
 	"github.com/dgraph-io/dgo/v2/protos/api"
 	"github.com/dgraph-io/dgraph/algo"
 	"github.com/dgraph-io/dgraph/conn"
@@ -38,6 +38,7 @@ import (
 	"github.com/golang/glog"
 	otrace "go.opencensus.io/trace"
 
+	"github.com/golang/protobuf/proto"
 	cindex "github.com/google/codesearch/index"
 	cregexp "github.com/google/codesearch/regexp"
 	"github.com/pkg/errors"
@@ -51,11 +52,11 @@ func invokeNetworkRequest(ctx context.Context, addr string,
 		return &pb.Result{}, errors.Wrapf(err, "dispatchTaskOverNetwork: while retrieving connection.")
 	}
 
-	conn := pl.Get()
+	con := pl.Get()
 	if span := otrace.FromContext(ctx); span != nil {
 		span.Annotatef(nil, "invokeNetworkRequest: Sending request to %v", addr)
 	}
-	c := pb.NewWorkerClient(conn)
+	c := pb.NewWorkerClient(con)
 	return f(ctx, c)
 }
 
@@ -130,9 +131,10 @@ func processWithBackupRequest(
 func ProcessTaskOverNetwork(ctx context.Context, q *pb.Query) (*pb.Result, error) {
 	attr := q.Attr
 	gid, err := groups().BelongsToReadOnly(attr)
-	if err != nil {
+	switch {
+	case err != nil:
 		return &pb.Result{}, err
-	} else if gid == 0 {
+	case gid == 0:
 		return &pb.Result{}, errNonExistentTablet
 	}
 
@@ -342,7 +344,7 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 		return nil
 	}
 
-	// This function has small boiletplate as handleUidPostings, around how the code gets
+	// This function has small boilerplate as handleUidPostings, around how the code gets
 	// concurrently executed. I didn't see much value in trying to separate it out, because the core
 	// logic constitutes most of the code volume here.
 	numGo, width := x.DivideAndRule(srcFn.n)
@@ -371,31 +373,24 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 			if err != nil {
 				return err
 			}
-			var vals []types.Val
-			if q.ExpandAll {
-				vals, err = pl.AllValues(args.q.ReadTs)
-			} else if listType && len(q.Langs) == 0 {
-				vals, err = pl.AllUntaggedValues(args.q.ReadTs)
-			} else {
-				var val types.Val
-				val, err = pl.ValueFor(args.q.ReadTs, q.Langs)
-				vals = append(vals, val)
-			}
 
-			if err == posting.ErrNoValue || len(vals) == 0 {
+			vals, fcs, err := retrieveValuesAndFacets(args, pl, listType)
+			switch {
+			case err == posting.ErrNoValue || len(vals) == 0:
 				out.UidMatrix = append(out.UidMatrix, &pb.List{})
 				out.FacetMatrix = append(out.FacetMatrix, &pb.FacetsList{})
 				if q.DoCount {
 					out.Counts = append(out.Counts, 0)
 				} else {
-					out.ValueMatrix = append(out.ValueMatrix, &pb.ValueList{Values: []*pb.TaskValue{}})
+					out.ValueMatrix = append(out.ValueMatrix,
+						&pb.ValueList{Values: []*pb.TaskValue{}})
 					if q.ExpandAll {
 						// To keep the cardinality same as that of ValueMatrix.
 						out.LangMatrix = append(out.LangMatrix, &pb.LangList{})
 					}
 				}
 				continue
-			} else if err != nil {
+			case err != nil:
 				return err
 			}
 
@@ -432,22 +427,9 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 			}
 			out.ValueMatrix = append(out.ValueMatrix, &vl)
 
-			if q.FacetsFilter != nil { // else part means isValueEdge
-				// This is Value edge and we are asked to do facet filtering. Not supported.
-				return errors.Errorf("Facet filtering is not supported on values.")
-			}
-
-			// add facets to result.
-			if q.FacetParam != nil {
-				fs, err := pl.Facets(args.q.ReadTs, q.FacetParam, q.Langs)
-				if err != nil {
-					fs = []*api.Facet{}
-				}
-				out.FacetMatrix = append(out.FacetMatrix,
-					&pb.FacetsList{FacetsList: []*pb.Facets{{Facets: fs}}})
-			} else {
-				out.FacetMatrix = append(out.FacetMatrix, &pb.FacetsList{})
-			}
+			// Add facets to result.
+			out.FacetMatrix = append(out.FacetMatrix,
+				&pb.FacetsList{FacetsList: []*pb.Facets{{Facets: fcs}}})
 
 			switch {
 			case q.DoCount:
@@ -511,6 +493,87 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 		out.LangMatrix = append(out.LangMatrix, chunk.LangMatrix...)
 	}
 	return nil
+}
+
+func retrieveValuesAndFacets(args funcArgs, pl *posting.List, listType bool) (
+	[]types.Val, []*api.Facet, error) {
+	q := args.q
+	var err error
+	var vals []types.Val
+	var fcs []*api.Facet
+
+	// Retrieve values when facet filtering is not being requested.
+	if q.FacetsFilter == nil {
+		// Retrieve values.
+		switch {
+		case q.ExpandAll:
+			vals, err = pl.AllValues(args.q.ReadTs)
+		case listType && len(q.Langs) == 0:
+			vals, err = pl.AllUntaggedValues(args.q.ReadTs)
+		default:
+			var val types.Val
+			val, err = pl.ValueFor(args.q.ReadTs, q.Langs)
+			vals = append(vals, val)
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+
+		// Retrieve facets.
+		if q.FacetParam != nil {
+			fcs, err = pl.Facets(args.q.ReadTs, q.FacetParam, q.Langs)
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+
+		return vals, fcs, nil
+	}
+
+	// Retrieve values when facet filtering is being requested.
+	facetsTree, err := preprocessFilter(q.FacetsFilter)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Retrieve the posting that matches the language preferences.
+	langMatch, err := pl.PostingFor(q.ReadTs, q.Langs)
+	if err != nil && err != posting.ErrNoValue {
+		return nil, nil, err
+	}
+	err = pl.Iterate(q.ReadTs, 0, func(p *pb.Posting) error {
+		if listType && len(q.Langs) == 0 {
+			// Don't retrieve tagged values unless explicitly asked.
+			if len(p.LangTag) > 0 {
+				return nil
+			}
+		} else {
+			// Only consider the posting that matches our language preferences.
+			if !proto.Equal(p, langMatch) {
+				return nil
+			}
+		}
+
+		picked, err := applyFacetsTree(p.Facets, facetsTree)
+		if err != nil {
+			return err
+		}
+		if picked {
+			vals = append(vals, types.Val{
+				Tid:   types.TypeID(p.ValType),
+				Value: p.Value,
+			})
+			if q.FacetParam != nil {
+				fcs = append(fcs, facets.CopyFacets(p.Facets, q.FacetParam)...)
+			}
+		}
+		return nil // continue iteration.
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return vals, fcs, nil
 }
 
 // This function handles operations on uid posting lists. Index keys, reverse keys and some data
@@ -746,11 +809,13 @@ func processTask(ctx context.Context, q *pb.Query, gid uint32) (*pb.Result, erro
 	// we get partitioned away from group zero as long as it's not removed.
 	// BelongsToReadOnly is called instead of BelongsTo to prevent this alpha
 	// from requesting to serve this tablet.
-	if gid, err := groups().BelongsToReadOnly(q.Attr); err != nil {
+	knownGid, err := groups().BelongsToReadOnly(q.Attr)
+	switch {
+	case err != nil:
 		return &pb.Result{}, err
-	} else if gid == 0 {
+	case knownGid == 0:
 		return &pb.Result{}, errNonExistentTablet
-	} else if gid != groups().groupId() {
+	case knownGid != groups().groupId():
 		return &pb.Result{}, errUnservedTablet
 	}
 
@@ -842,7 +907,7 @@ func (qs *queryState) helpProcessTask(ctx context.Context, q *pb.Query, gid uint
 
 	if srcFn.fnType == hasFn && srcFn.isFuncAtRoot {
 		span.Annotate(nil, "handleHasFunction")
-		if err := qs.handleHasFunction(ctx, q, out); err != nil {
+		if err := qs.handleHasFunction(ctx, q, out, srcFn); err != nil {
 			return nil, err
 		}
 	}
@@ -885,8 +950,9 @@ func (qs *queryState) helpProcessTask(ctx context.Context, q *pb.Query, gid uint
 		}
 	}
 
-	// For string matching functions, check the language.
-	if needsStringFiltering(srcFn, q.Langs, attr) {
+	// For string matching functions, check the language. We are not checking here
+	// for hasFn as filtering for it has already been done in handleHasFunction.
+	if srcFn.fnType != hasFn && needsStringFiltering(srcFn, q.Langs, attr) {
 		span.Annotate(nil, "filterStringFunction")
 		if err := qs.filterStringFunction(funcArgs{q, gid, srcFn, out}); err != nil {
 			return nil, err
@@ -1069,11 +1135,12 @@ func (qs *queryState) handleCompareFunction(ctx context.Context, arg funcArgs) e
 
 		x.AssertTrue(len(arg.out.UidMatrix) > 0)
 		rowsToFilter := 0
-		if arg.srcFn.fname == eq {
+		switch {
+		case arg.srcFn.fname == eq:
 			// If fn is eq, we could have multiple arguments and hence multiple rows
 			// to filter.
 			rowsToFilter = len(arg.srcFn.tokens)
-		} else if arg.srcFn.tokens[0] == arg.srcFn.ineqValueToken {
+		case arg.srcFn.tokens[0] == arg.srcFn.ineqValueToken:
 			// If operation is not eq and ineqValueToken equals first token,
 			// then we need to filter first row..
 			rowsToFilter = 1
@@ -1347,28 +1414,11 @@ func (qs *queryState) filterStringFunction(arg funcArgs) error {
 	// TODO: This function can be optimized by having a query specific cache, which can be populated
 	// by the handleHasFunction for e.g. for a `has(name)` query.
 	for _, uid := range uids.Uids {
-		key := x.DataKey(attr, uid)
-		pl, err := qs.cache.Get(key)
-		if err != nil {
-			return err
-		}
-
-		var vals []types.Val
-		var val types.Val
-		if lang == "" {
-			if schema.State().IsList(attr) {
-				vals, err = pl.AllValues(arg.q.ReadTs)
-			} else {
-				val, err = pl.Value(arg.q.ReadTs)
-				vals = append(vals, val)
-			}
-		} else {
-			val, err = pl.ValueForTag(arg.q.ReadTs, lang)
-			vals = append(vals, val)
-		}
-		if err == posting.ErrNoValue {
+		vals, err := qs.getValsForUID(attr, lang, uid, arg.q.ReadTs)
+		switch {
+		case err == posting.ErrNoValue:
 			continue
-		} else if err != nil {
+		case err != nil:
 			return err
 		}
 
@@ -1424,6 +1474,32 @@ func (qs *queryState) filterStringFunction(arg funcArgs) error {
 		algo.IntersectWith(arg.out.UidMatrix[i], filtered, arg.out.UidMatrix[i])
 	}
 	return nil
+}
+
+func (qs *queryState) getValsForUID(attr, lang string, uid, ReadTs uint64) ([]types.Val, error) {
+	key := x.DataKey(attr, uid)
+	pl, err := qs.cache.Get(key)
+	if err != nil {
+		return nil, err
+	}
+
+	var vals []types.Val
+	var val types.Val
+	if lang == "" {
+		if schema.State().IsList(attr) {
+			// NOTE: we will never reach here if this function is called from handleHasFunction, as
+			// @lang is not allowed for list predicates.
+			vals, err = pl.AllValues(ReadTs)
+		} else {
+			val, err = pl.Value(ReadTs)
+			vals = append(vals, val)
+		}
+	} else {
+		val, err = pl.ValueForTag(ReadTs, lang)
+		vals = append(vals, val)
+	}
+
+	return vals, err
 }
 
 func matchRegex(value types.Val, regex *cregexp.Regexp) bool {
@@ -1686,11 +1762,12 @@ func (w *grpcWorker) ServeTask(ctx context.Context, q *pb.Query) (*pb.Result, er
 	}
 
 	gid, err := groups().BelongsToReadOnly(q.Attr)
-	if err != nil {
+	switch {
+	case err != nil:
 		return &pb.Result{}, err
-	} else if gid == 0 {
+	case gid == 0:
 		return &pb.Result{}, errNonExistentTablet
-	} else if gid != groups().groupId() {
+	case gid != groups().groupId():
 		return &pb.Result{}, errUnservedTablet
 	}
 
@@ -1807,26 +1884,29 @@ func filterOnStandardFn(fname string, fcTokens []string, argTokens []string) (bo
 			return false, nil
 		}
 		aidx := 0
+	loop:
 		for fidx := 0; aidx < len(argTokens) && fidx < len(fcTokens); {
-			if fcTokens[fidx] < argTokens[aidx] {
+			switch {
+			case fcTokens[fidx] < argTokens[aidx]:
 				fidx++
-			} else if fcTokens[fidx] == argTokens[aidx] {
+			case fcTokens[fidx] == argTokens[aidx]:
 				fidx++
 				aidx++
-			} else {
+			default:
 				// as all of argTokens should match
 				// which is not possible now.
-				break
+				break loop
 			}
 		}
 		return aidx == len(argTokens), nil
 	case "anyofterms":
 		for aidx, fidx := 0, 0; aidx < len(argTokens) && fidx < len(fcTokens); {
-			if fcTokens[fidx] < argTokens[aidx] {
+			switch {
+			case fcTokens[fidx] < argTokens[aidx]:
 				fidx++
-			} else if fcTokens[fidx] == argTokens[aidx] {
+			case fcTokens[fidx] == argTokens[aidx]:
 				return true, nil
-			} else {
+			default:
 				aidx++
 			}
 		}
@@ -1955,9 +2035,10 @@ func (qs *queryState) evaluate(cp countParams, out *pb.Result) error {
 		return nil
 	}
 
-	if cp.fn == "lt" {
+	switch cp.fn {
+	case "lt":
 		count--
-	} else if cp.fn == "gt" {
+	case "gt":
 		count++
 	}
 
@@ -1991,7 +2072,8 @@ func (qs *queryState) evaluate(cp countParams, out *pb.Result) error {
 	return nil
 }
 
-func (qs *queryState) handleHasFunction(ctx context.Context, q *pb.Query, out *pb.Result) error {
+func (qs *queryState) handleHasFunction(ctx context.Context, q *pb.Query, out *pb.Result,
+	srcFn *functionContext) error {
 	span := otrace.FromContext(ctx)
 	stop := x.SpanTimer(span, "handleHasFunction")
 	defer stop()
@@ -2023,6 +2105,22 @@ func (qs *queryState) handleHasFunction(ctx context.Context, q *pb.Query, out *p
 	it := txn.NewIterator(itOpt)
 	defer it.Close()
 
+	lang := langForFunc(q.Langs)
+	needFiltering := needsStringFiltering(srcFn, q.Langs, q.Attr)
+
+	// This function checks if we should include uid in result or not when has is queried with
+	// @lang(eg: has(name@en)). We need to do this inside this function to return correct result
+	// for first.
+	checkInclusion := func(uid uint64) error {
+		if !needFiltering {
+			return nil
+		}
+
+		_, err := qs.getValsForUID(q.Attr, lang, uid, q.ReadTs)
+		return err
+	}
+
+loop:
 	// This function could be switched to the stream.Lists framework, but after the change to use
 	// BitCompletePosting, the speed here is already pretty fast. The slowdown for @lang predicates
 	// occurs in filterStringFunction (like has(name) queries).
@@ -2049,7 +2147,15 @@ func (qs *queryState) handleHasFunction(ctx context.Context, q *pb.Query, out *p
 		}
 		if item.UserMeta()&posting.BitCompletePosting > 0 {
 			// This bit would only be set if there are valid uids in UidPack.
+			err := checkInclusion(pk.Uid)
+			switch {
+			case err == posting.ErrNoValue:
+				continue
+			case err != nil:
+				return err
+			}
 			result.Uids = append(result.Uids, pk.Uid)
+
 			// We'll stop fetching if we fetch the required count.
 			if len(result.Uids) >= int(q.First) {
 				break
@@ -2062,13 +2168,23 @@ func (qs *queryState) handleHasFunction(ctx context.Context, q *pb.Query, out *p
 		if err != nil {
 			return err
 		}
-		if empty, err := l.IsEmpty(q.ReadTs, 0); err != nil {
+		empty, err := l.IsEmpty(q.ReadTs, 0)
+		switch {
+		case err != nil:
 			return err
-		} else if !empty {
+		case !empty:
+			err := checkInclusion(pk.Uid)
+			switch {
+			case err == posting.ErrNoValue:
+				continue
+			case err != nil:
+				return err
+			}
 			result.Uids = append(result.Uids, pk.Uid)
+
 			// We'll stop fetching if we fetch the required count.
 			if len(result.Uids) >= int(q.First) {
-				break
+				break loop
 			}
 		}
 
