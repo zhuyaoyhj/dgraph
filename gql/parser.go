@@ -3002,14 +3002,15 @@ func godeep(it *lex.ItemIterator, gq *GraphQuery) error {
 					child.Expand = child.NeedsVar[len(child.NeedsVar)-1].Name
 				case "_all_":
 					child.Expand = "_all_"
-				case "_forward_":
-					//yhj-code forward reverse and all 可以使用三个dgraph.type实现。一个为Thing_all, Thing_forward和Thing_reverse
-					//到时expand时，用expand(Thing_all), expand(Thing_forward) and expand(Thing_reverse)
-					child.Expand = "_all_"
-					//yhj-code end
-					//return item.Errorf("Argument _forward_ has been deprecated")
-				case "_reverse_":
-					return item.Errorf("Argument _reverse_ has been deprecated")
+				//case "_forward_":
+				//	//yhj-code forward reverse and all 可以使用三个dgraph.type实现。一个为Thing_all, Thing_forward和Thing_reverse
+				//	//到时expand时，用expand(Thing_all), expand(Thing_forward) and expand(Thing_reverse)
+				//	//或者去掉这个_forward_，设置一个dgraph.type为_forward_这样就可以直接使用expand(<dgraph.type>(_forward_))
+				//	child.Expand = "_all_"
+				//	//yhj-code end
+				//	//return item.Errorf("Argument _forward_ has been deprecated")
+				//case "_reverse_":
+				//	return item.Errorf("Argument _reverse_ has been deprecated")
 				default:
 					//expand(<dgraph.type>)
 					if err := parseTypeList(it, child); err != nil {
