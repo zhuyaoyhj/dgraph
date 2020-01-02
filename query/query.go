@@ -1870,7 +1870,7 @@ func expandSubgraph(ctx context.Context, sg *SubGraph) ([]*SubGraph, error) {
 			//yhj-code 处理expandall情况
 			//之前对_forward_的处理，是解析query，如果解析为reverse或者forward则认为是错误的。如果是all则设置expand为all，如果其他则找寻对应的type，并扩展
 			//这里的expandall是在实际处理查询过程中的expandall使用。所以是两个部分。
-			temp.Params.ExpandAll = child.Params.Expand == "_all_"
+			temp.Params.ExpandAll = child.Params.Expand != ""
 			//yhj-code end
 			//temp.Params.ExpandAll = child.Params.Expand != "_reverse_" &&
 			//	child.Params.Expand != "_forward_"
