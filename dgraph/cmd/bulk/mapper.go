@@ -55,7 +55,7 @@ type shardState struct {
 	// write them to file.
 	entries     []*pb.MapEntry
 	encodedSize uint64
-	mu          sync.Mutex // Allow only 1 write per shard at a time.
+	mu          sync.Mutex // Allow only 1 writse per shard at a time.
 }
 
 func newMapper(st *state) *mapper {
