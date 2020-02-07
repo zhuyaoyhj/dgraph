@@ -107,6 +107,10 @@ func (r *reducer) createBadger(i int) *badger.DB {
 		WithTableLoadingMode(bo.MemoryMap).WithValueThreshold(1 << 10 /* 1 KB */).
 		WithLogger(nil).WithMaxCacheSize(1 << 20).
 		WithEncryptionKey(enc.ReadEncryptionKeyFile(r.opt.BadgerKeyFile))
+
+	// Over-write badger options based on the options provided by the user.
+	r.setBadgerOptions(&opt)
+
 	db, err := badger.OpenManaged(opt)
 	x.Check(err)
 
@@ -115,6 +119,15 @@ func (r *reducer) createBadger(i int) *badger.DB {
 
 	r.dbs = append(r.dbs, db)
 	return db
+}
+
+func (r *reducer) setBadgerOptions(opt *badger.Options) {
+	// Set the compression level.
+	opt.ZSTDCompressionLevel = r.state.opt.BadgerCompressionLevel
+	if r.state.opt.BadgerCompressionLevel < 1 {
+		x.Fatalf("Invalid compression level: %d. It should be greater than zero",
+			r.state.opt.BadgerCompressionLevel)
+	}
 }
 
 type mapIterator struct {
@@ -319,6 +332,9 @@ func (r *reducer) toList(mapEntries []*pb.MapEntry, list *bpb.KVList) int {
 	pl := new(pb.PostingList)
 	var size int
 
+	userMeta := []byte{posting.BitCompletePosting}
+	writeVersionTs := r.state.writeTs
+
 	appendToList := func() {
 		atomic.AddInt64(&r.prog.reduceKeyCount, 1)
 
@@ -354,8 +370,8 @@ func (r *reducer) toList(mapEntries []*pb.MapEntry, list *bpb.KVList) int {
 		kv := &bpb.KV{
 			Key:      y.Copy(currentKey),
 			Value:    val,
-			UserMeta: []byte{posting.BitCompletePosting},
-			Version:  r.state.writeTs,
+			UserMeta: userMeta,
+			Version:  writeVersionTs,
 		}
 		size += kv.Size()
 		list.Kv = append(list.Kv, kv)

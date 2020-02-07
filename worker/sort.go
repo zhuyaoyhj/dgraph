@@ -17,6 +17,7 @@
 package worker
 
 import (
+	"context"
 	"encoding/hex"
 	"sort"
 	"strings"
@@ -26,7 +27,6 @@ import (
 	"github.com/golang/glog"
 	"github.com/pkg/errors"
 	otrace "go.opencensus.io/trace"
-	"golang.org/x/net/context"
 
 	"github.com/dgraph-io/dgraph/algo"
 	"github.com/dgraph-io/dgraph/posting"
@@ -54,7 +54,7 @@ type sortresult struct {
 
 // SortOverNetwork sends sort query over the network.
 func SortOverNetwork(ctx context.Context, q *pb.SortMessage) (*pb.SortResult, error) {
-	gid, err := groups().BelongsToReadOnly(q.Order[0].Attr)
+	gid, err := groups().BelongsToReadOnly(q.Order[0].Attr, q.ReadTs)
 	if err != nil {
 		return &emptySortResult, err
 	} else if gid == 0 {
@@ -88,7 +88,7 @@ func (w *grpcWorker) Sort(ctx context.Context, s *pb.SortMessage) (*pb.SortResul
 	ctx, span := otrace.StartSpan(ctx, "worker.Sort")
 	defer span.End()
 
-	gid, err := groups().BelongsToReadOnly(s.Order[0].Attr)
+	gid, err := groups().BelongsToReadOnly(s.Order[0].Attr, s.ReadTs)
 	if err != nil {
 		return &emptySortResult, err
 	}

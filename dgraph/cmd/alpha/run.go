@@ -18,8 +18,8 @@ package alpha
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -37,6 +37,7 @@ import (
 	"github.com/dgraph-io/dgo/v2/protos/api"
 	"github.com/dgraph-io/dgraph/edgraph"
 	"github.com/dgraph-io/dgraph/ee/enc"
+	"github.com/dgraph-io/dgraph/graphql/admin"
 	"github.com/dgraph-io/dgraph/posting"
 	"github.com/dgraph-io/dgraph/schema"
 	"github.com/dgraph-io/dgraph/tok"
@@ -50,13 +51,14 @@ import (
 	"go.opencensus.io/plugin/ocgrpc"
 	otrace "go.opencensus.io/trace"
 	"go.opencensus.io/zpages"
-	"golang.org/x/net/context"
 	"golang.org/x/net/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	_ "google.golang.org/grpc/encoding/gzip" // grpc compression
 	"google.golang.org/grpc/health"
 	hapi "google.golang.org/grpc/health/grpc_health_v1"
+
+	_ "github.com/vektah/gqlparser/validator/rules" // make gql validator init() all rules
 )
 
 const (
@@ -68,7 +70,7 @@ var (
 	bindall bool
 
 	// used for computing uptime
-	beginTime = time.Now()
+	startTime = time.Now()
 
 	// Alpha is the sub-command invoked when running "dgraph alpha".
 	Alpha x.SubCommand
@@ -161,6 +163,7 @@ they form a Raft group and provide synchronous replication.
 			"Actual usage by the process would be more than specified here.")
 	flag.String("mutations", "allow",
 		"Set mutation mode to allow, disallow, or strict.")
+	flag.Bool("telemetry", true, "Send anonymous telemetry data to Dgraph devs.")
 
 	// Useful for running multiple servers on the same machine.
 	flag.IntP("port_offset", "o", 0,
@@ -184,6 +187,9 @@ they form a Raft group and provide synchronous replication.
 
 	// By default Go GRPC traces all requests.
 	grpc.EnableTracing = false
+
+	flag.Bool("graphql_introspection", true, "Set to false for no GraphQL schema introspection")
+
 }
 
 func setupCustomTokenizers() {
@@ -277,6 +283,25 @@ func grpcPort() int {
 
 func healthCheck(w http.ResponseWriter, r *http.Request) {
 	x.AddCorsHeaders(w)
+	var err error
+
+	if _, ok := r.URL.Query()["all"]; ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		ctx := attachAccessJwt(context.Background(), r)
+		var resp *api.Response
+		if resp, err = (&edgraph.Server{}).Health(ctx, true); err != nil {
+			x.SetStatus(w, x.Error, err.Error())
+			return
+		}
+		if resp == nil {
+			x.SetStatus(w, x.ErrorNoData, "No health information available.")
+			return
+		}
+		_, _ = w.Write(resp.Json)
+		return
+	}
 
 	_, ok := r.URL.Query()["live"]
 	if !ok {
@@ -290,20 +315,18 @@ func healthCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	info := struct {
-		Version  string        `json:"version"`
-		Instance string        `json:"instance"`
-		Uptime   time.Duration `json:"uptime"`
-	}{
-		Version:  x.Version(),
-		Instance: "alpha",
-		Uptime:   time.Since(beginTime),
+	var resp *api.Response
+	if resp, err = (&edgraph.Server{}).Health(context.Background(), false); err != nil {
+		x.SetStatus(w, x.Error, err.Error())
+		return
 	}
-	data, _ := json.Marshal(info)
-
+	if resp == nil {
+		x.SetStatus(w, x.ErrorNoData, "No health information available.")
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
+	_, _ = w.Write(resp.Json)
 }
 
 func stateHandler(w http.ResponseWriter, r *http.Request) {
@@ -389,7 +412,7 @@ func serveHTTP(l net.Listener, tlsCfg *tls.Config, wg *sync.WaitGroup) {
 	}
 }
 
-func setupServer() {
+func setupServer(closer *y.Closer) {
 	go worker.RunServer(bindall) // For pb.communication.
 
 	laddr := "localhost"
@@ -429,6 +452,27 @@ func setupServer() {
 	http.HandleFunc("/admin/export", exportHandler)
 	http.HandleFunc("/admin/config/lru_mb", memoryLimitHandler)
 
+	introspection := Alpha.Conf.GetBool("graphql_introspection")
+	mainServer, adminServer := admin.NewServers(introspection, closer)
+	http.Handle("/graphql", mainServer.HTTPHandler())
+
+	whitelist := func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !handlerInit(w, r, map[string]bool{
+				http.MethodPost: true,
+				http.MethodGet:  true,
+			}) {
+				return
+			}
+			h.ServeHTTP(w, r)
+		})
+	}
+	http.Handle("/admin", whitelist(adminServer.HTTPHandler()))
+
+	addr := fmt.Sprintf("%s:%d", laddr, httpPort())
+	glog.Infof("Bringing up GraphQL HTTP API at %s/graphql", addr)
+	glog.Infof("Bringing up GraphQL HTTP admin API at %s/admin", addr)
+
 	// Add OpenCensus z-pages.
 	zpages.Handle(http.DefaultServeMux, "/z")
 
@@ -441,9 +485,14 @@ func setupServer() {
 	go serveGRPC(grpcListener, tlsCfg, &wg)
 	go serveHTTP(httpListener, tlsCfg, &wg)
 
+	if Alpha.Conf.GetBool("telemetry") {
+		go edgraph.PeriodicallyPostTelemetry()
+	}
+
 	go func() {
 		defer wg.Done()
 		<-shutdownCh
+
 		// Stops grpc/http servers; Already accepted connections are not closed.
 		if err := grpcListener.Close(); err != nil {
 			glog.Warningf("Error while closing gRPC listener: %s", err)
@@ -532,6 +581,7 @@ func run() {
 		AclEnabled:          secretFile != "",
 		SnapshotAfter:       Alpha.Conf.GetInt("snapshot_after"),
 		AbortOlderThan:      abortDur,
+		StartTime:           startTime,
 	}
 
 	setupCustomTokenizers()
@@ -603,10 +653,15 @@ func run() {
 		edgraph.RefreshAcls(aclCloser)
 	}()
 
-	setupServer()
+	// Graphql subscribes to alpha to get schema updates. We need to close that before we
+	// close alpha. This closer is for closing and waiting that subscription.
+	adminCloser := y.NewCloser(1)
+
+	setupServer(adminCloser)
 	glog.Infoln("GRPC and HTTP stopped.")
 	aclCloser.SignalAndWait()
 	worker.BlockingStop()
+	adminCloser.SignalAndWait()
 	glog.Info("Disposing server state.")
 	worker.State.Dispose()
 	glog.Infoln("Server shutdown. Bye!")

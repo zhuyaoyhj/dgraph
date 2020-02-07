@@ -18,6 +18,7 @@ package worker
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"fmt"
 	"sort"
@@ -47,7 +48,6 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/golang/glog"
-	"golang.org/x/net/context"
 	"golang.org/x/net/trace"
 )
 
@@ -364,6 +364,22 @@ func (n *node) applyCommitted(proposal *pb.Proposal) error {
 
 	case len(proposal.CleanPredicate) > 0:
 		n.elog.Printf("Cleaning predicate: %s", proposal.CleanPredicate)
+		end := time.Now().Add(10 * time.Second)
+		for proposal.ExpectedChecksum > 0 && time.Now().Before(end) {
+			cur := atomic.LoadUint64(&groups().membershipChecksum)
+			if proposal.ExpectedChecksum == cur {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+			glog.Infof("Waiting for checksums to match. Expected: %d. Current: %d\n",
+				proposal.ExpectedChecksum, cur)
+		}
+		if time.Now().After(end) {
+			glog.Warningf(
+				"Giving up on predicate deletion: %q due to timeout. Wanted checksum: %d.",
+				proposal.CleanPredicate, proposal.ExpectedChecksum)
+			return nil
+		}
 		return posting.DeletePredicate(ctx, proposal.CleanPredicate)
 
 	case proposal.Delta != nil:
@@ -889,7 +905,7 @@ func (n *node) Run() {
 			}
 
 			// Store the hardstate and entries. Note that these are not CommittedEntries.
-			n.SaveToStorage(rd.HardState, rd.Entries, rd.Snapshot)
+			n.SaveToStorage(&rd.HardState, rd.Entries, &rd.Snapshot)
 			timer.Record("disk")
 			if rd.MustSync {
 				if err := n.Store.Sync(); err != nil {
@@ -1023,6 +1039,12 @@ func (n *node) rollupLists(readTs uint64) error {
 			return
 		}
 		pk, err := x.Parse(key)
+
+		// Type keys should not count for tablet size calculations.
+		if pk.IsType() {
+			return
+		}
+
 		if err != nil {
 			glog.Errorf("Error while parsing key %s: %v", hex.Dump(key), err)
 			return

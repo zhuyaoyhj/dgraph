@@ -17,6 +17,7 @@
 package worker
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strconv"
@@ -24,7 +25,6 @@ import (
 	"github.com/golang/glog"
 	"github.com/pkg/errors"
 	otrace "go.opencensus.io/trace"
-	"golang.org/x/net/context"
 
 	"github.com/dgraph-io/badger/v2"
 	bpb "github.com/dgraph-io/badger/v2/pb"
@@ -190,9 +190,15 @@ func (w *grpcWorker) MovePredicate(ctx context.Context,
 	if len(in.Predicate) == 0 {
 		return &emptyPayload, errEmptyPredicate
 	}
+
 	if in.DestGid == 0 {
 		glog.Infof("Was instructed to delete tablet: %v", in.Predicate)
-		p := &pb.Proposal{CleanPredicate: in.Predicate}
+		// Expected Checksum ensures that all the members of this group would block until they get
+		// the latest membership status where this predicate now belongs to another group. So they
+		// know that they are no longer serving this predicate, before they delete it from their
+		// state. Without this checksum, the members could end up deleting the predicate and then
+		// serve a request asking for that predicate, causing Jepsen failures.
+		p := &pb.Proposal{CleanPredicate: in.Predicate, ExpectedChecksum: in.ExpectedChecksum}
 		return &emptyPayload, groups().Node.proposeAndWait(ctx, p)
 	}
 	if err := posting.Oracle().WaitForTs(ctx, in.TxnTs); err != nil {
