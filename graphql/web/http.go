@@ -20,18 +20,25 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+
 	"io"
+	"io/ioutil"
 	"mime"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/golang/glog"
+	"github.com/graph-gophers/graphql-transport-ws/graphqlws"
 	"go.opencensus.io/trace"
-	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 
 	"github.com/dgraph-io/dgraph/graphql/api"
+	"github.com/dgraph-io/dgraph/graphql/authorization"
 	"github.com/dgraph-io/dgraph/graphql/resolve"
 	"github.com/dgraph-io/dgraph/graphql/schema"
+	"github.com/dgraph-io/dgraph/graphql/subscription"
 	"github.com/dgraph-io/dgraph/x"
 	"github.com/pkg/errors"
 )
@@ -44,17 +51,24 @@ type IServeGraphQL interface {
 
 	// HTTPHandler returns a http.Handler that serves GraphQL.
 	HTTPHandler() http.Handler
+
+	// Resolve processes a GQL Request using the correct resolver and returns a GQL Response
+	Resolve(ctx context.Context, gqlReq *schema.Request) *schema.Response
 }
 
 type graphqlHandler struct {
 	resolver *resolve.RequestResolver
 	handler  http.Handler
+	poller   *subscription.Poller
 }
 
 // NewServer returns a new IServeGraphQL that can serve the given resolvers
-func NewServer(resolver *resolve.RequestResolver) IServeGraphQL {
-	gh := &graphqlHandler{resolver: resolver}
-	gh.handler = recoveryHandler(commonHeaders(gh))
+func NewServer(schemaEpoch *uint64, resolver *resolve.RequestResolver) IServeGraphQL {
+	gh := &graphqlHandler{
+		resolver: resolver,
+		poller:   subscription.NewPoller(schemaEpoch, resolver),
+	}
+	gh.handler = recoveryHandler(commonHeaders(gh.Handler()))
 	return gh
 }
 
@@ -63,7 +77,12 @@ func (gh *graphqlHandler) HTTPHandler() http.Handler {
 }
 
 func (gh *graphqlHandler) ServeGQL(resolver *resolve.RequestResolver) {
+	gh.poller.UpdateResolver(resolver)
 	gh.resolver = resolver
+}
+
+func (gh *graphqlHandler) Resolve(ctx context.Context, gqlReq *schema.Request) *schema.Response {
+	return gh.resolver.Resolve(ctx, gqlReq)
 }
 
 // write chooses between the http response writer and gzip writer
@@ -85,35 +104,83 @@ func write(w http.ResponseWriter, rr *schema.Response, acceptGzip bool) {
 	}
 }
 
+type graphqlSubscription struct {
+	graphqlHandler *graphqlHandler
+}
+
+func (gs *graphqlSubscription) Subscribe(
+	ctx context.Context,
+	document string,
+	operationName string,
+	variableValues map[string]interface{}) (payloads <-chan interface{},
+	err error) {
+	req := &schema.Request{
+		OperationName: operationName,
+		Query:         document,
+		Variables:     variableValues,
+	}
+	res, err := gs.graphqlHandler.poller.AddSubscriber(req)
+	if err != nil {
+		return nil, err
+	}
+
+	go func() {
+		// Context is cancelled when a client disconnects, so delete subscription after client
+		// disconnects.
+		<-ctx.Done()
+		gs.graphqlHandler.poller.TerminateSubscription(res.BucketID, res.SubscriptionID)
+	}()
+	return res.UpdateCh, ctx.Err()
+}
+
+func (gh *graphqlHandler) Handler() http.Handler {
+	return graphqlws.NewHandlerFunc(&graphqlSubscription{
+		graphqlHandler: gh,
+	}, gh)
+}
+
 // ServeHTTP handles GraphQL queries and mutations that get resolved
 // via GraphQL->Dgraph->GraphQL.  It writes a valid GraphQL JSON response
 // to w.
 func (gh *graphqlHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		return
+	}
 
 	ctx, span := trace.StartSpan(r.Context(), "handler")
 	defer span.End()
 
 	if !gh.isValid() {
-		panic("graphqlHandler not initialised")
+		x.Panic(errors.New("graphqlHandler not initialised"))
+	}
+
+	ctx = authorization.AttachAuthorizationJwt(ctx, r)
+	ctx = x.AttachAccessJwt(ctx, r)
+
+	if ip, port, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		// Add remote addr as peer info so that the remote address can be logged
+		// inside Server.Login
+		if intPort, convErr := strconv.Atoi(port); convErr == nil {
+			ctx = peer.NewContext(ctx, &peer.Peer{
+				Addr: &net.TCPAddr{
+					IP:   net.ParseIP(ip),
+					Port: intPort,
+				},
+			})
+		}
 	}
 
 	var res *schema.Response
 	gqlReq, err := getRequest(ctx, r)
 
-	if accessJwt := r.Header.Get("accessJwt"); accessJwt != "" {
-		md := metadata.New(nil)
-		md.Append("accessJwt", accessJwt)
-		ctx = metadata.NewIncomingContext(ctx, md)
-	}
-
 	if err != nil {
 		res = schema.ErrorResponse(err)
 	} else {
+		gqlReq.Header = r.Header
 		res = gh.resolver.Resolve(ctx, gqlReq)
 	}
 
 	write(w, res, strings.Contains(r.Header.Get("Accept-Encoding"), "gzip"))
-
 }
 
 func (gh *graphqlHandler) isValid() bool {
@@ -171,12 +238,18 @@ func getRequest(ctx context.Context, r *http.Request) (*schema.Request, error) {
 			if err = d.Decode(&gqlReq); err != nil {
 				return nil, errors.Wrap(err, "Not a valid GraphQL request body")
 			}
+		case "application/graphql":
+			bytes, err := ioutil.ReadAll(r.Body)
+			if err != nil {
+				return nil, errors.Wrap(err, "Could not read GraphQL request body")
+			}
+			gqlReq.Query = string(bytes)
 		default:
 			// https://graphql.org/learn/serving-over-http/#post-request says:
 			// "A standard GraphQL POST request should use the application/json
 			// content type ..."
 			return nil, errors.New(
-				"Unrecognised Content-Type.  Please use application/json for GraphQL requests")
+				"Unrecognised Content-Type.  Please use application/json or application/graphql for GraphQL requests")
 		}
 	default:
 		return nil,
@@ -189,6 +262,10 @@ func getRequest(ctx context.Context, r *http.Request) (*schema.Request, error) {
 func commonHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		x.AddCorsHeaders(w)
+		// Overwrite the allowed headers after also including headers which are part of
+		// forwardHeaders.
+		w.Header().Set("Access-Control-Allow-Headers", schema.AllowedHeaders())
+
 		w.Header().Set("Content-Type", "application/json")
 
 		next.ServeHTTP(w, r)

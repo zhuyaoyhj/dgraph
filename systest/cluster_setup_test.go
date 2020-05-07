@@ -17,6 +17,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -27,8 +29,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dgraph-io/dgo/v2"
-	"github.com/dgraph-io/dgo/v2/protos/api"
+	"github.com/dgraph-io/dgo/v200"
+	"github.com/dgraph-io/dgo/v200/protos/api"
+	"github.com/dgraph-io/dgraph/testutil"
 	"github.com/dgraph-io/dgraph/x"
 	"github.com/golang/glog"
 	"github.com/pkg/errors"
@@ -64,7 +67,7 @@ func NewDgraphCluster(dir string) *DgraphCluster {
 }
 
 func (d *DgraphCluster) StartZeroOnly() error {
-	d.zero = exec.Command(os.ExpandEnv("$GOPATH/bin/dgraph"),
+	d.zero = exec.Command(testutil.DgraphBinaryPath(),
 		"zero",
 		"-w=wz",
 		"-o", strconv.Itoa(d.zeroPortOffset),
@@ -84,7 +87,7 @@ func (d *DgraphCluster) StartZeroOnly() error {
 }
 
 func (d *DgraphCluster) StartAlphaOnly() error {
-	d.dgraph = exec.Command(os.ExpandEnv("$GOPATH/bin/dgraph"),
+	d.dgraph = exec.Command(testutil.DgraphBinaryPath(),
 		"alpha",
 		"--lru_mb=4096",
 		"--zero", ":"+d.zeroPort,
@@ -127,7 +130,7 @@ type Node struct {
 
 func (d *DgraphCluster) AddNode(dir string) (Node, error) {
 	o := strconv.Itoa(freePort(x.PortInternal))
-	dgraph := exec.Command(os.ExpandEnv("$GOPATH/bin/dgraph"),
+	dgraph := exec.Command(testutil.DgraphBinaryPath(),
 		"alpha",
 		"--lru_mb=4096",
 		"--zero", ":"+d.zeroPort,
@@ -167,11 +170,20 @@ type matchExport struct {
 
 func matchExportCount(opts matchExport) error {
 	// Now try and export data from second server.
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/admin/export", opts.port))
+	adminUrl := fmt.Sprintf("http://localhost:%d/admin", opts.port)
+	params := testutil.GraphQLParams{
+		Query: testutil.ExportRequest,
+	}
+	b, err := json.Marshal(params)
 	if err != nil {
 		return err
 	}
-	b, err := ioutil.ReadAll(resp.Body)
+	resp, err := http.Post(adminUrl, "application/json", bytes.NewBuffer(b))
+	if err != nil {
+		return err
+	}
+
+	b, err = ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}

@@ -173,7 +173,7 @@ func (m *XidMap) AssignUid(xid string) (uint64, bool) {
 		var uidBuf [8]byte
 		binary.BigEndian.PutUint64(uidBuf[:], newUid)
 		if err := m.writer.Set([]byte(xid), uidBuf[:]); err != nil {
-			panic(err)
+			x.Panic(err)
 		}
 	}
 	return newUid, true
@@ -191,7 +191,9 @@ func (m *XidMap) updateMaxSeen(max uint64) {
 		if prev >= max {
 			return
 		}
-		atomic.CompareAndSwapUint64(&m.maxUidSeen, prev, max)
+		if atomic.CompareAndSwapUint64(&m.maxUidSeen, prev, max) {
+			return
+		}
 	}
 }
 

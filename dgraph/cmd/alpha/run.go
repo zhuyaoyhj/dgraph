@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	_ "net/http/pprof" // http profiler
@@ -30,11 +31,12 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/dgraph-io/badger/v2/y"
-	"github.com/dgraph-io/dgo/v2/protos/api"
+	"github.com/dgraph-io/dgo/v200/protos/api"
 	"github.com/dgraph-io/dgraph/edgraph"
 	"github.com/dgraph-io/dgraph/ee/enc"
 	"github.com/dgraph-io/dgraph/graphql/admin"
@@ -58,7 +60,7 @@ import (
 	"google.golang.org/grpc/health"
 	hapi "google.golang.org/grpc/health/grpc_health_v1"
 
-	_ "github.com/vektah/gqlparser/validator/rules" // make gql validator init() all rules
+	_ "github.com/vektah/gqlparser/v2/validator/rules" // make gql validator init() all rules
 )
 
 const (
@@ -106,6 +108,8 @@ they form a Raft group and provide synchronous replication.
 	flag.String("badger.vlog", "mmap",
 		"[mmap, disk] Specifies how Badger Value log is stored."+
 			" mmap consumes more RAM, but provides better performance.")
+	flag.Int("badger.compression_level", 3,
+		"The compression level for Badger. A higher value uses more resources.")
 	flag.String("encryption_key_file", "",
 		"The file that stores the encryption key. The key size must be 16, 24, or 32 bytes long. "+
 			"The key size determines the corresponding block size for AES encryption "+
@@ -138,7 +142,7 @@ they form a Raft group and provide synchronous replication.
 	flag.String("my", "",
 		"IP_ADDRESS:PORT of this Dgraph Alpha, so other Dgraph Alphas can talk to this.")
 	flag.StringP("zero", "z", fmt.Sprintf("localhost:%d", x.PortZeroGrpc),
-		"IP_ADDRESS:PORT of a Dgraph Zero.")
+		"Comma separated list of Dgraph zero addresses of the form IP_ADDRESS:PORT.")
 	flag.Uint64("idx", 0,
 		"Optional Raft ID that this Dgraph Alpha will use to join RAFT groups.")
 	flag.Int("max_retries", -1,
@@ -148,6 +152,7 @@ they form a Raft group and provide synchronous replication.
 		"If set, all Alter requests to Dgraph would need to have this token."+
 			" The token can be passed as follows: For HTTP requests, in X-Dgraph-AuthToken header."+
 			" For Grpc, in auth-token key in the context.")
+	flag.Bool("enable_sentry", true, "Turn on/off sending events to Sentry. (default on)")
 
 	flag.String("acl_secret_file", "", "The file that stores the HMAC secret, "+
 		"which is used for signing the JWT and should have at least 32 ASCII characters. "+
@@ -189,7 +194,8 @@ they form a Raft group and provide synchronous replication.
 	grpc.EnableTracing = false
 
 	flag.Bool("graphql_introspection", true, "Set to false for no GraphQL schema introspection")
-
+	flag.Bool("ludicrous_mode", false, "Run alpha in ludicrous mode")
+	flag.Duration("graphql_poll_interval", time.Second, "polling interval for graphql subscription.")
 }
 
 func setupCustomTokenizers() {
@@ -289,7 +295,7 @@ func healthCheck(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 
-		ctx := attachAccessJwt(context.Background(), r)
+		ctx := x.AttachAccessJwt(context.Background(), r)
 		var resp *api.Response
 		if resp, err = (&edgraph.Server{}).Health(ctx, true); err != nil {
 			x.SetStatus(w, x.Error, err.Error())
@@ -335,7 +341,7 @@ func stateHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	ctx := context.Background()
-	ctx = attachAccessJwt(ctx, r)
+	ctx = x.AttachAccessJwt(ctx, r)
 
 	var aResp *api.Response
 	if aResp, err = (&edgraph.Server{}).State(ctx); err != nil {
@@ -453,14 +459,30 @@ func setupServer(closer *y.Closer) {
 	http.HandleFunc("/admin/config/lru_mb", memoryLimitHandler)
 
 	introspection := Alpha.Conf.GetBool("graphql_introspection")
-	mainServer, adminServer := admin.NewServers(introspection, closer)
+
+	// Global Epoch is a lockless synchronization mechanism for graphql service.
+	// It's is just an atomic counter used by the graphql subscription to update its state.
+	// It's is used to detect the schema changes and server exit.
+
+	// Implementation for schema change:
+	// The global epoch is incremented when there is a schema change.
+	// Polling goroutine acquires the current epoch count as a local epoch.
+	// The local epoch count is checked against the global epoch,
+	// If there is change then we terminate the subscription.
+
+	// Implementation for server exit:
+	// The global epoch is set to maxUint64 while exiting the server.
+	// By using this information polling goroutine terminates the subscription.
+	globalEpoch := uint64(0)
+	mainServer, adminServer := admin.NewServers(introspection, &globalEpoch, closer)
 	http.Handle("/graphql", mainServer.HTTPHandler())
 
 	whitelist := func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !handlerInit(w, r, map[string]bool{
-				http.MethodPost: true,
-				http.MethodGet:  true,
+				http.MethodPost:    true,
+				http.MethodGet:     true,
+				http.MethodOptions: true,
 			}) {
 				return
 			}
@@ -468,6 +490,9 @@ func setupServer(closer *y.Closer) {
 		})
 	}
 	http.Handle("/admin", whitelist(adminServer.HTTPHandler()))
+	http.HandleFunc("/admin/schema", func(w http.ResponseWriter, r *http.Request) {
+		adminSchemaHandler(w, r, adminServer)
+	})
 
 	addr := fmt.Sprintf("%s:%d", laddr, httpPort())
 	glog.Infof("Bringing up GraphQL HTTP API at %s/graphql", addr)
@@ -492,6 +517,7 @@ func setupServer(closer *y.Closer) {
 	go func() {
 		defer wg.Done()
 		<-worker.ShutdownCh
+		atomic.StoreUint64(&globalEpoch, math.MaxUint64)
 
 		// Stops grpc/http servers; Already accepted connections are not closed.
 		if err := grpcListener.Close(); err != nil {
@@ -511,9 +537,10 @@ func run() {
 	bindall = Alpha.Conf.GetBool("bindall")
 
 	opts := worker.Options{
-		BadgerTables:  Alpha.Conf.GetString("badger.tables"),
-		BadgerVlog:    Alpha.Conf.GetString("badger.vlog"),
-		BadgerKeyFile: Alpha.Conf.GetString("encryption_key_file"),
+		BadgerTables:           Alpha.Conf.GetString("badger.tables"),
+		BadgerVlog:             Alpha.Conf.GetString("badger.vlog"),
+		BadgerKeyFile:          Alpha.Conf.GetString("encryption_key_file"),
+		BadgerCompressionLevel: Alpha.Conf.GetInt("badger.compression_level"),
 
 		PostingDir: Alpha.Conf.GetString("postings"),
 		WALDir:     Alpha.Conf.GetString("wal"),
@@ -571,7 +598,7 @@ func run() {
 		NumPendingProposals: Alpha.Conf.GetInt("pending_proposals"),
 		Tracing:             Alpha.Conf.GetFloat64("trace"),
 		MyAddr:              Alpha.Conf.GetString("my"),
-		ZeroAddr:            Alpha.Conf.GetString("zero"),
+		ZeroAddr:            strings.Split(Alpha.Conf.GetString("zero"), ","),
 		RaftId:              cast.ToUint64(Alpha.Conf.GetString("idx")),
 		WhiteListedIPRanges: ips,
 		MaxRetries:          Alpha.Conf.GetInt("max_retries"),
@@ -580,6 +607,8 @@ func run() {
 		SnapshotAfter:       Alpha.Conf.GetInt("snapshot_after"),
 		AbortOlderThan:      abortDur,
 		StartTime:           startTime,
+		LudicrousMode:       Alpha.Conf.GetBool("ludicrous_mode"),
+		BadgerKeyFile:       worker.Config.BadgerKeyFile,
 	}
 
 	setupCustomTokenizers()
@@ -587,9 +616,16 @@ func run() {
 	x.Config.PortOffset = Alpha.Conf.GetInt("port_offset")
 	x.Config.QueryEdgeLimit = cast.ToUint64(Alpha.Conf.GetString("query_edge_limit"))
 	x.Config.NormalizeNodeLimit = cast.ToInt(Alpha.Conf.GetString("normalize_node_limit"))
+	x.Config.PollInterval = Alpha.Conf.GetDuration("graphql_poll_interval")
+
+	if Alpha.Conf.GetBool("enable_sentry") {
+		x.InitSentry(enc.EeBuild)
+		defer x.FlushSentry()
+		x.ConfigureSentryScope("alpha")
+		x.WrapPanics()
+	}
 
 	x.PrintVersion()
-
 	glog.Infof("x.Config: %+v", x.Config)
 	glog.Infof("x.WorkerConfig: %+v", x.WorkerConfig)
 	glog.Infof("worker.Config: %+v", worker.Config)

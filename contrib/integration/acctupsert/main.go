@@ -27,8 +27,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/dgraph-io/dgo/v2"
-	"github.com/dgraph-io/dgo/v2/protos/api"
+	"github.com/dgraph-io/dgo/v200"
+	"github.com/dgraph-io/dgo/v200/protos/api"
 	"github.com/dgraph-io/dgraph/testutil"
 	"github.com/dgraph-io/dgraph/x"
 )
@@ -83,14 +83,15 @@ func setup(c *dgo.Dgraph) {
 	x.Check(c.Alter(ctx, &api.Operation{
 		DropAll: true,
 	}))
-	x.Check(c.Alter(ctx, &api.Operation{
+	op := &api.Operation{
 		Schema: `
 			first:  string   @index(term) @upsert .
 			last:   string   @index(hash) @upsert .
 			age:    int      @index(int)  @upsert .
 			when:   int                   .
 		`,
-	}))
+	}
+	x.Check(c.Alter(ctx, op))
 }
 
 func doUpserts(c *dgo.Dgraph) {

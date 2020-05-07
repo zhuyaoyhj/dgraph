@@ -19,10 +19,12 @@ package x
 import (
 	"bufio"
 	"bytes"
+	builtinGzip "compress/gzip"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"net"
@@ -37,8 +39,8 @@ import (
 
 	"github.com/dgraph-io/badger/v2"
 	"github.com/dgraph-io/badger/v2/y"
-	"github.com/dgraph-io/dgo/v2"
-	"github.com/dgraph-io/dgo/v2/protos/api"
+	"github.com/dgraph-io/dgo/v200"
+	"github.com/dgraph-io/dgo/v200/protos/api"
 
 	"github.com/golang/glog"
 	"github.com/pkg/errors"
@@ -49,6 +51,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/encoding/gzip"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -56,6 +59,7 @@ import (
 var (
 	// ErrNotSupported is thrown when an enterprise feature is requested in the open source version.
 	ErrNotSupported = errors.Errorf("Feature available only in Dgraph Enterprise Edition")
+	ErrNoJwt        = errors.New("no accessJwt available")
 )
 
 const (
@@ -79,10 +83,10 @@ const (
 	Star = "_STAR_ALL"
 
 	// GrpcMaxSize is the maximum possible size for a gRPC message.
-	// Dgraph uses the maximum size for the most flexibility (4GB - equal
+	// Dgraph uses the maximum size for the most flexibility (2GB - equal
 	// to the max grpc frame size). Users will still need to set the max
 	// message sizes allowable on the client size when dialing.
-	GrpcMaxSize = 4 << 30
+	GrpcMaxSize = math.MaxInt32
 
 	// PortZeroGrpc is the default gRPC port for zero.
 	PortZeroGrpc = 5080
@@ -115,14 +119,30 @@ const (
 {"predicate":"dgraph.rule.predicate","type":"string","index":true,"tokenizer":["exact"],"upsert":true},
 {"predicate":"dgraph.rule.permission","type":"int"}
 `
+
+	InitialTypes = `
+"types": [
+{"fields":[{"name":"dgraph.graphql.schema"},{"name":"dgraph.graphql.xid"}],"name":"dgraph.graphql"},
+{"fields": [{"name": "dgraph.password"},{"name": "dgraph.xid"},{"name": "dgraph.user.group"}],"name": "User"},
+{"fields": [{"name": "dgraph.acl.rule"},{"name": "dgraph.xid"}],"name": "Group"},
+{"fields": [{"name": "dgraph.rule.predicate"},{"name": "dgraph.rule.permission"}],"name": "Rule"}
+]`
+
 	// GroupIdFileName is the name of the file storing the ID of the group to which
 	// the data in a postings directory belongs. This ID is used to join the proper
 	// group the first time an Alpha comes up with data from a restored backup or a
 	// bulk load.
 	GroupIdFileName = "group_id"
 
+	AccessControlAllowedHeaders = "X-Dgraph-AccessToken, " +
+		"Content-Type, Content-Length, Accept-Encoding, Cache-Control, " +
+		"X-CSRF-Token, X-Auth-Token, X-Requested-With"
+
 	// GraphqlPredicates is the json representation of the predicate reserved for graphql system.
-	GraphqlPredicates = `{"predicate":"dgraph.graphql.schema", "type": "string"}`
+	GraphqlPredicates = `
+{"predicate":"dgraph.graphql.schema", "type": "string"},
+{"predicate":"dgraph.graphql.xid","type":"string","index":true,"tokenizer":["exact"],"upsert":true}
+`
 )
 
 var (
@@ -221,6 +241,20 @@ func GqlErrorf(message string, args ...interface{}) *GqlError {
 	}
 }
 
+func ExtractJwt(ctx context.Context) ([]string, error) {
+	// extract the jwt and unmarshal the jwt to get the list of groups
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return nil, ErrNoJwt
+	}
+	accessJwt := md.Get("accessJwt")
+	if len(accessJwt) == 0 {
+		return nil, ErrNoJwt
+	}
+
+	return accessJwt, nil
+}
+
 // WithLocations adds a list of locations to a GqlError and returns the same
 // GqlError (fluent style).
 func (gqlErr *GqlError) WithLocations(locs ...Location) *GqlError {
@@ -255,7 +289,7 @@ func SetStatus(w http.ResponseWriter, code, msg string) {
 			glog.Errorf("Error while writing: %+v", err)
 		}
 	} else {
-		panic(fmt.Sprintf("Unable to marshal: %+v", qr))
+		Panic(errors.Errorf("Unable to marshal: %+v", qr))
 	}
 }
 
@@ -270,9 +304,7 @@ func SetHttpStatus(w http.ResponseWriter, code int, msg string) {
 func AddCorsHeaders(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "X-Dgraph-AccessToken, "+
-		"Content-Type, Content-Length, Accept-Encoding, Cache-Control, "+
-		"X-CSRF-Token, X-Auth-Token, X-Requested-With")
+	w.Header().Set("Access-Control-Allow-Headers", AccessControlAllowedHeaders)
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 	w.Header().Set("Connection", "close")
 }
@@ -298,7 +330,7 @@ func SetStatusWithData(w http.ResponseWriter, code, msg string) {
 			glog.Errorf("Error while writing: %+v", err)
 		}
 	} else {
-		panic(fmt.Sprintf("Unable to marshal: %+v", qr))
+		Panic(errors.Errorf("Unable to marshal: %+v", qr))
 	}
 }
 
@@ -321,6 +353,34 @@ func ParseRequest(w http.ResponseWriter, r *http.Request, data interface{}) bool
 		return false
 	}
 	return true
+}
+
+// AttachAccessJwt adds any incoming JWT header data into the grpc context metadata
+func AttachAccessJwt(ctx context.Context, r *http.Request) context.Context {
+	if accessJwt := r.Header.Get("X-Dgraph-AccessToken"); accessJwt != "" {
+		md, ok := metadata.FromIncomingContext(ctx)
+		if !ok {
+			md = metadata.New(nil)
+		}
+
+		md.Append("accessJwt", accessJwt)
+		ctx = metadata.NewIncomingContext(ctx, md)
+	}
+	return ctx
+}
+
+// Write response body, transparently compressing if necessary.
+func WriteResponse(w http.ResponseWriter, r *http.Request, b []byte) (int, error) {
+	var out io.Writer = w
+
+	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		w.Header().Set("Content-Encoding", "gzip")
+		gzw := builtinGzip.NewWriter(w)
+		defer gzw.Close()
+		out = gzw
+	}
+
+	return out.Write(b)
 }
 
 // Min returns the minimum of the two given numbers.
@@ -855,6 +915,25 @@ func RunVlogGC(store *badger.DB, closer *y.Closer) {
 			runGC()
 		case <-mandatoryVlogTicker.C:
 			runGC()
+		}
+	}
+}
+
+type DB interface {
+	Sync() error
+}
+
+func StoreSync(db DB, closer *y.Closer) {
+	defer closer.Done()
+	ticker := time.NewTicker(1 * time.Second)
+	for {
+		select {
+		case <-ticker.C:
+			if err := db.Sync(); err != nil {
+				glog.Errorf("Error while calling db sync: %+v", err)
+			}
+		case <-closer.HasBeenClosed():
+			return
 		}
 	}
 }

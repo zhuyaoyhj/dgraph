@@ -36,10 +36,41 @@ enum DgraphIndex {
 	hour
 }
 
+input AuthRule {
+	and: [AuthRule]
+	or: [AuthRule]
+	not: AuthRule
+	rule: String
+}
+
+enum HTTPMethod {
+	GET
+	POST
+	PUT
+	PATCH
+	DELETE
+}
+
+input CustomHTTP {
+	url: String!
+	method: HTTPMethod!
+	body: String
+	graphql: String
+	forwardHeaders: [String!]
+}
+
 directive @hasInverse(field: String!) on FIELD_DEFINITION
 directive @search(by: [DgraphIndex!]) on FIELD_DEFINITION
 directive @dgraph(type: String, pred: String) on OBJECT | INTERFACE | FIELD_DEFINITION
 directive @id on FIELD_DEFINITION
+directive @secret(field: String!, pred: String) on OBJECT | INTERFACE
+directive @auth(
+	query: AuthRule, 
+	add: AuthRule, 
+	update: AuthRule, 
+	delete:AuthRule) on OBJECT | FIELD_DEFINITION
+directive @custom(http: CustomHTTP) on FIELD_DEFINITION
+directive @remote on OBJECT | INTERFACE
 
 input IntFilter {
 	eq: Int
@@ -97,26 +128,32 @@ input StringHashFilter {
 
 type AddMovieDirectorPayload {
 	moviedirector(filter: MovieDirectorFilter, order: MovieDirectorOrder, first: Int, offset: Int): [MovieDirector]
+	numUids: Int
 }
 
 type AddMoviePayload {
 	movie(filter: MovieFilter, order: MovieOrder, first: Int, offset: Int): [Movie]
+	numUids: Int
 }
 
 type DeleteMovieDirectorPayload {
 	msg: String
+	numUids: Int
 }
 
 type DeleteMoviePayload {
 	msg: String
+	numUids: Int
 }
 
 type UpdateMovieDirectorPayload {
 	moviedirector(filter: MovieDirectorFilter, order: MovieDirectorOrder, first: Int, offset: Int): [MovieDirector]
+	numUids: Int
 }
 
 type UpdateMoviePayload {
 	movie(filter: MovieFilter, order: MovieOrder, first: Int, offset: Int): [Movie]
+	numUids: Int
 }
 
 #######################
@@ -142,6 +179,7 @@ input AddMovieDirectorInput {
 
 input AddMovieInput {
 	name: String!
+	director: [MovieDirectorRef]
 }
 
 input MovieDirectorFilter {
@@ -184,6 +222,7 @@ input MoviePatch {
 input MovieRef {
 	id: ID
 	name: String
+	director: [MovieDirectorRef]
 }
 
 input UpdateMovieDirectorInput {
@@ -220,4 +259,15 @@ type Mutation {
 	addMovieDirector(input: [AddMovieDirectorInput!]!): AddMovieDirectorPayload
 	updateMovieDirector(input: UpdateMovieDirectorInput!): UpdateMovieDirectorPayload
 	deleteMovieDirector(filter: MovieDirectorFilter!): DeleteMovieDirectorPayload
+}
+
+#######################
+# Generated Subscriptions
+#######################
+
+type Subscription {
+	getMovie(id: ID!): Movie
+	queryMovie(filter: MovieFilter, order: MovieOrder, first: Int, offset: Int): [Movie]
+	getMovieDirector(id: ID!): MovieDirector
+	queryMovieDirector(filter: MovieDirectorFilter, order: MovieDirectorOrder, first: Int, offset: Int): [MovieDirector]
 }

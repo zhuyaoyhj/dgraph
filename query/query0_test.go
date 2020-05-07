@@ -23,7 +23,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/dgraph-io/dgo/v2"
+	"github.com/dgraph-io/dgo/v200"
 	"github.com/dgraph-io/dgraph/gql"
 	"github.com/dgraph-io/dgraph/testutil"
 	"github.com/dgraph-io/dgraph/x"
@@ -2246,7 +2246,6 @@ func TestFilterUsingLenFunction(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		t.Log("Running: ", tc.name)
 		js := processQueryNoErr(t, tc.in)
 		require.JSONEq(t, tc.out, js)
 	}

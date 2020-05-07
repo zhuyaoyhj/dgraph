@@ -28,7 +28,7 @@ import (
 	"github.com/dgraph-io/badger/v2"
 	badgerpb "github.com/dgraph-io/badger/v2/pb"
 	"github.com/dgraph-io/badger/v2/y"
-	"github.com/dgraph-io/dgo/v2/protos/api"
+	"github.com/dgraph-io/dgo/v200/protos/api"
 	"github.com/dgraph-io/dgraph/conn"
 	"github.com/dgraph-io/dgraph/ee/enc"
 	"github.com/dgraph-io/dgraph/protos/pb"
@@ -87,8 +87,11 @@ func StartRaftNodes(walStore *badger.DB, bindall bool) {
 	}
 
 	x.AssertTruef(len(x.WorkerConfig.ZeroAddr) > 0, "Providing dgraphzero address is mandatory.")
-	x.AssertTruef(x.WorkerConfig.ZeroAddr != x.WorkerConfig.MyAddr,
-		"Dgraph Zero address and Dgraph address (IP:Port) can't be the same.")
+	for _, zeroAddr := range x.WorkerConfig.ZeroAddr {
+		x.AssertTruef(zeroAddr != x.WorkerConfig.MyAddr,
+			"Dgraph Zero address %s and Dgraph address (IP:Port) %s can't be the same.",
+			zeroAddr, x.WorkerConfig.MyAddr)
+	}
 
 	if x.WorkerConfig.RaftId == 0 {
 		id, err := raftwal.RaftId(walStore)
@@ -113,6 +116,7 @@ func StartRaftNodes(walStore *badger.DB, bindall bool) {
 	}
 	var connState *pb.ConnectionState
 	var err error
+
 	for { // Keep on retrying. See: https://github.com/dgraph-io/dgraph/issues/2289
 		pl := gr.connToZeroLeader()
 		if pl == nil {
@@ -198,6 +202,7 @@ func (g *groupi) proposeInitialTypes() {
 
 func (g *groupi) proposeInitialSchema() {
 	initialSchema := schema.InitialSchema()
+	ctx := context.Background()
 	for _, s := range initialSchema {
 		if gid, err := g.BelongsToReadOnly(s.Predicate, 0); err != nil {
 			glog.Errorf("Error getting tablet for predicate %s. Will force schema proposal.",
@@ -205,7 +210,7 @@ func (g *groupi) proposeInitialSchema() {
 			g.upsertSchema(s, nil)
 		} else if gid == 0 {
 			g.upsertSchema(s, nil)
-		} else if curr, _ := schema.State().Get(s.Predicate); gid == g.groupId() &&
+		} else if curr, _ := schema.State().Get(ctx, s.Predicate); gid == g.groupId() &&
 			!proto.Equal(s, &curr) {
 			// If this tablet is served to the group, do not upsert the schema unless the
 			// stored schema and the proposed one are different.
@@ -280,7 +285,7 @@ func UpdateMembershipState(ctx context.Context) error {
 	g := groups()
 	p := g.Leader(0)
 	if p == nil {
-		return errors.Errorf("Don't have the address of any dgraphzero server")
+		return errors.Errorf("don't have the address of any dgraph zero leader")
 	}
 
 	c := pb.NewZeroClient(p.Get())
@@ -645,14 +650,19 @@ func (g *groupi) connToZeroLeader() *conn.Pool {
 	// No leader found. Let's get the latest membership state from Zero.
 	delay := connBaseDelay
 	maxHalfDelay := time.Second
-	for { // Keep on retrying. See: https://github.com/dgraph-io/dgraph/issues/2289
+	for i := 0; ; i++ { // Keep on retrying. See: https://github.com/dgraph-io/dgraph/issues/2289
 		time.Sleep(delay)
 		if delay <= maxHalfDelay {
 			delay *= 2
 		}
+
+		zAddrList := x.WorkerConfig.ZeroAddr
+		// Pick addresses in round robin manner.
+		addr := zAddrList[i%len(zAddrList)]
+
 		pl := g.AnyServer(0)
 		if pl == nil {
-			pl = conn.GetPools().Connect(x.WorkerConfig.ZeroAddr)
+			pl = conn.GetPools().Connect(addr)
 		}
 		if pl == nil {
 			glog.V(1).Infof("No healthy Zero server found. Retrying...")
