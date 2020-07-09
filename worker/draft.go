@@ -219,7 +219,7 @@ func (n *node) applyMutations(ctx context.Context, proposal *pb.Proposal) (rerr 
 	// Since raft committed logs are serialized, we can derive
 	// schema here without any locking
 
-	// stores a map of predicate and type of first mutation for each predicate
+	// Stores a map of predicate and type of first mutation for each predicate.
 	schemaMap := make(map[string]types.TypeID)
 	for _, edge := range proposal.Mutations.Edges {
 		if edge.Entity == 0 && bytes.Equal(edge.Value, []byte(x.Star)) {
@@ -232,7 +232,7 @@ func (n *node) applyMutations(ctx context.Context, proposal *pb.Proposal) (rerr 
 			span.Annotatef(nil, "Deleting predicate: %s", edge.Attr)
 			return posting.DeletePredicate(ctx, edge.Attr)
 		}
-		// Dont derive schema when doing deletion.
+		// Don't derive schema when doing deletion.
 		if edge.Op == pb.DirectedEdge_DEL {
 			continue
 		}
@@ -256,7 +256,11 @@ func (n *node) applyMutations(ctx context.Context, proposal *pb.Proposal) (rerr 
 	// schema deduction is done by RDF/JSON chunker.
 	for attr, storageType := range schemaMap {
 		if _, err := schema.State().TypeOf(attr); err != nil {
-			if err := createSchema(attr, storageType); err != nil {
+			hint := pb.Metadata_DEFAULT
+			if mutHint, ok := proposal.Mutations.Metadata.PredHints[attr]; ok {
+				hint = mutHint
+			}
+			if err := createSchema(attr, storageType, hint); err != nil {
 				return err
 			}
 		}
@@ -360,6 +364,22 @@ func (n *node) applyCommitted(proposal *pb.Proposal) error {
 
 	case len(proposal.CleanPredicate) > 0:
 		n.elog.Printf("Cleaning predicate: %s", proposal.CleanPredicate)
+		end := time.Now().Add(10 * time.Second)
+		for proposal.ExpectedChecksum > 0 && time.Now().Before(end) {
+			cur := atomic.LoadUint64(&groups().membershipChecksum)
+			if proposal.ExpectedChecksum == cur {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+			glog.Infof("Waiting for checksums to match. Expected: %d. Current: %d\n",
+				proposal.ExpectedChecksum, cur)
+		}
+		if time.Now().After(end) {
+			glog.Warningf(
+				"Giving up on predicate deletion: %q due to timeout. Wanted checksum: %d.",
+				proposal.CleanPredicate, proposal.ExpectedChecksum)
+			return nil
+		}
 		return posting.DeletePredicate(ctx, proposal.CleanPredicate)
 
 	case proposal.Delta != nil:
@@ -1019,6 +1039,12 @@ func (n *node) rollupLists(readTs uint64) error {
 			return
 		}
 		pk, err := x.Parse(key)
+
+		// Type keys should not count for tablet size calculations.
+		if pk.IsType() {
+			return
+		}
+
 		if err != nil {
 			glog.Errorf("Error while parsing key %s: %v", hex.Dump(key), err)
 			return

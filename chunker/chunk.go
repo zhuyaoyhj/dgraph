@@ -308,8 +308,7 @@ func (jc *jsonChunker) Parse(chunkBuf *bytes.Buffer) error {
 		return nil
 	}
 
-	err := jc.nqs.ParseJSON(chunkBuf.Bytes(), SetNquads)
-	return err
+	return jc.nqs.ParseJSON(chunkBuf.Bytes(), SetNquads)
 }
 
 func slurpSpace(r *bufio.Reader) error {

@@ -1801,6 +1801,34 @@ func TestParseSchemaTypeMulti(t *testing.T) {
 	require.Equal(t, len(res.Schema.Fields), 0)
 }
 
+func TestParseSchemaSpecialChars(t *testing.T) {
+	query := `
+		schema (pred: [Person, <人物>]) {
+		}
+	`
+	res, err := Parse(Request{Str: query})
+	require.NoError(t, err)
+	require.Equal(t, len(res.Schema.Predicates), 2)
+	require.Equal(t, len(res.Schema.Types), 0)
+	require.Equal(t, res.Schema.Predicates[0], "Person")
+	require.Equal(t, res.Schema.Predicates[1], "人物")
+	require.Equal(t, len(res.Schema.Fields), 0)
+}
+
+func TestParseSchemaTypeSpecialChars(t *testing.T) {
+	query := `
+		schema (type: [Person, <人物>]) {
+		}
+	`
+	res, err := Parse(Request{Str: query})
+	require.NoError(t, err)
+	require.Equal(t, len(res.Schema.Predicates), 0)
+	require.Equal(t, len(res.Schema.Types), 2)
+	require.Equal(t, res.Schema.Types[0], "Person")
+	require.Equal(t, res.Schema.Types[1], "人物")
+	require.Equal(t, len(res.Schema.Fields), 0)
+}
+
 func TestParseSchemaError(t *testing.T) {
 	query := `
 		schema () {
@@ -2962,6 +2990,21 @@ func TestLangsInvalid9(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(),
 		"The * symbol cannot be used as a valid language inside functions")
+}
+
+func TestLangsInvalid10(t *testing.T) {
+	query := `
+	query {
+		me(func: uid(1)) {
+			name@.:*
+		}
+	}
+	`
+
+	_, err := Parse(Request{Str: query})
+	require.Error(t, err)
+	require.Contains(t, err.Error(),
+		"If * is used, no other languages are allowed in the language list")
 }
 
 func TestLangsFilter(t *testing.T) {
@@ -4922,4 +4965,147 @@ func TestParseVarAfterCountQry(t *testing.T) {
 
 	_, err := Parse(Request{Str: query})
 	require.NoError(t, err)
+}
+
+func TestRecurseWithArgs(t *testing.T) {
+	query := `
+	{
+		me(func: eq(name, "sad")) @recurse(depth: $hello , loop: true) {
+		}
+	}`
+	gq, err := Parse(Request{Str: query, Variables: map[string]string{"$hello": "1"}})
+	require.NoError(t, err)
+	require.Equal(t, gq.Query[0].RecurseArgs.Depth, uint64(1))
+
+	query = `
+	{
+		me(func: eq(name, "sad"))@recurse(depth: 1 , loop: $hello) {
+		}
+	}`
+	gq, err = Parse(Request{Str: query, Variables: map[string]string{"$hello": "true"}})
+	require.NoError(t, err)
+	require.Equal(t, gq.Query[0].RecurseArgs.AllowLoop, true)
+
+	query = `
+	{
+		me(func: eq(name, "sad"))@recurse(depth: $hello, loop: $hello1) {
+		}
+	}`
+	gq, err = Parse(Request{Str: query, Variables: map[string]string{"$hello": "1", "$hello1": "true"}})
+	require.NoError(t, err)
+	require.Equal(t, gq.Query[0].RecurseArgs.AllowLoop, true)
+	require.Equal(t, gq.Query[0].RecurseArgs.Depth, uint64(1))
+
+	query = `
+	{
+		me(func: eq(name, "sad"))@recurse(depth: $_hello_hello, loop: $hello1_heelo1) {
+		}
+	}`
+	gq, err = Parse(Request{Str: query, Variables: map[string]string{"$_hello_hello": "1",
+		"$hello1_heelo1": "true"}})
+	require.NoError(t, err)
+	require.Equal(t, gq.Query[0].RecurseArgs.AllowLoop, true)
+	require.Equal(t, gq.Query[0].RecurseArgs.Depth, uint64(1))
+}
+
+func TestRecurseWithArgsWithError(t *testing.T) {
+	query := `
+	{
+		me(func: eq(name, "sad"))@recurse(depth: $hello, loop: true) {
+		}
+	}`
+	_, err := Parse(Request{Str: query})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "variable $hello not defined")
+
+	query = `
+	{
+		me(func: eq(name, "sad"))@recurse(depth: 1, loop: $hello) {
+		}
+	}`
+	_, err = Parse(Request{Str: query})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "variable $hello not defined")
+
+	query = `
+	{
+		me(func: eq(name, "sad"))@recurse(depth: $hello, loop: $hello1) {
+		}
+	}`
+	_, err = Parse(Request{Str: query, Variables: map[string]string{"$hello": "sd", "$hello1": "true"}})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "should be type of integer")
+
+	query = `
+	{
+		me(func: eq(name, "sad"))@recurse(depth: $hello, loop: $hello1) {
+		}
+	}`
+	_, err = Parse(Request{Str: query, Variables: map[string]string{"$hello": "1", "$hello1": "tre"}})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "should be type of boolean")
+}
+
+func TestRecurse(t *testing.T) {
+	query := `
+	{
+		me(func: eq(name, "sad"))@recurse(depth: 1, loop: true) {
+		}
+	}`
+	gq, err := Parse(Request{Str: query})
+	require.NoError(t, err)
+	require.Equal(t, gq.Query[0].RecurseArgs.Depth, uint64(1))
+	require.Equal(t, gq.Query[0].RecurseArgs.AllowLoop, true)
+}
+
+func TestRecurseWithError(t *testing.T) {
+	query := `
+	{
+		me(func: eq(name, "sad"))@recurse(depth: hello, loop: true) {
+		}
+	}`
+	_, err := Parse(Request{Str: query})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "Value inside depth should be type of integer")
+	query = `
+	{
+		me(func: eq(name, "sad"))@recurse(depth: 1, loop: tre) {
+		}
+	}`
+	_, err = Parse(Request{Str: query})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "Value inside loop should be type of boolean")
+}
+func TestParseExpandFilter(t *testing.T) {
+	query := `
+		{
+			q(func: eq(name, "Frodo")) {
+				expand(_all_) @filter(type(Person)) {
+					uid
+				}
+			}
+		}`
+
+	gq, err := Parse(Request{Str: query})
+	require.NoError(t, err)
+	require.Equal(t, 1, len(gq.Query))
+	require.Equal(t, 1, len(gq.Query[0].Children))
+	require.Equal(t, "type", gq.Query[0].Children[0].Filter.Func.Name)
+	require.Equal(t, 1, len(gq.Query[0].Children[0].Filter.Func.Args))
+	require.Equal(t, "Person", gq.Query[0].Children[0].Filter.Func.Args[0].Value)
+}
+
+func TestParseExpandFilterErr(t *testing.T) {
+	query := `
+		{
+			q(func: eq(name, "Frodo")) {
+				expand(_all_) @filter(has(Person)) {
+					uid
+				}
+			}
+		}`
+
+	_, err := Parse(Request{Str: query})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "expand is only compatible with type filters")
 }

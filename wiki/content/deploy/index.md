@@ -513,7 +513,7 @@ You would need to edit the `docker-machine` security group to open inbound traff
 If you are on AWS, below is the security group (**docker-machine**) after
 necessary changes.
 
-![AWS Security Group](./images/aws.png)
+{{% load-img "/images/aws.png" "AWS Security Group" %}}
 
 [Here](https://docs.docker.com/machine/drivers/aws/#options) is a list of full options for the `amazonec2` driver which allows you choose the
 instance type, security group, AMI among many other
@@ -737,8 +737,7 @@ You would need to edit the `docker-machine` security group to open inbound traff
 
 If you are on AWS, below is the security group (**docker-machine**) after necessary changes.
 
-
-![AWS Security Group](./images/aws.png)
+{{% load-img "/images/aws.png" "AWS Security Group" %}}
 
 Copy the following file on your host machine and name it as docker-compose.yml
 
@@ -1226,6 +1225,24 @@ By default the Alpha listens on `localhost` for admin actions (the loopback addr
 
 {{% notice "tip" %}}Set max file descriptors to a high value like 10000 if you are going to load a lot of data.{{% /notice %}}
 
+### More about /health endpoint
+
+The `/health` endpoint of Dgraph Alpha returns HTTP status 200 with a JSON consisting of basic information about the running worker.
+
+Here’s an example of JSON returned from `/health` endpoint:
+
+```json
+{
+  "version": "v1.1.1",
+  "instance": "alpha",
+  "uptime": 75011100974
+}
+```
+
+- `version`: Version of Dgraph running the Alpha server.
+- `instance`: Name of the instance. Always set to `alpha`.
+- `uptime`: Time in nanoseconds since the Alpha server is up and running.
+
 ## More about Dgraph Zero
 
 Dgraph Zero controls the Dgraph cluster. It automatically moves data between
@@ -1243,13 +1260,13 @@ Like Alpha, Zero also exposes HTTP on 6080 (+ any `--port_offset`). You can quer
 to see useful information, like the following:
 
 * `/state` Information about the nodes that are part of the cluster. Also contains information about
-  size of predicates and groups they belong to.
+size of predicates and groups they belong to.
 * `/assign?what=uids&num=100` This would allocate `num` uids and return a JSON map
 containing `startId` and `endId`, both inclusive. This id range can be safely assigned
 externally to new nodes during data ingestion.
 * `/assign?what=timestamps&num=100` This would request timestamps from Zero.
-  This is useful to fast forward Zero state when starting from a postings
-  directory, which already has commits higher than Zero's leased timestamp.
+This is useful to fast forward Zero state when starting from a postings
+directory, which already has commits higher than Zero's leased timestamp.
 * `/removeNode?id=3&group=2` If a replica goes down and can't be recovered, you
 can remove it and add a new node to the quorum. This endpoint can be used to
 remove a dead Zero or Dgraph Alpha node. To remove dead Zero nodes, pass
@@ -1262,7 +1279,7 @@ You should not use the same `idx` of a node that was removed earlier.
 {{% /notice %}}
 
 * `/moveTablet?tablet=name&group=2` This endpoint can be used to move a tablet to a group. Zero
-  already does shard rebalancing every 8 mins, this endpoint can be used to force move a tablet.
+already does shard rebalancing every 8 mins, this endpoint can be used to force move a tablet.
 
 
 These are the **POST** endpoints available:
@@ -1270,7 +1287,138 @@ These are the **POST** endpoints available:
 * `/enterpriseLicense` Use endpoint to apply an enterprise license to the cluster by supplying it
 as part of the body.
 
+### More about /state endpoint
 
+The `/state` endpoint of Dgraph Zero returns a JSON document of the current group membership info:
+
+- Instances which are part of the cluster.
+- Number of instances in Zero group and each Alpha groups.
+- Current leader of each group.
+- Predicates that belong to a group.
+- Estimated size in bytes of each predicate.
+- Enterprise license information.
+- Max Leased transaction ID.
+- Max Leased UID.
+- CID (Cluster ID).
+
+Here’s an example of JSON returned from `/state` endpoint for a 6-node Dgraph cluster with three replicas:
+
+```json
+{
+  "counter": "15",
+  "groups": {
+    "1": {
+      "members": {
+        "1": {
+          "id": "1",
+          "groupId": 1,
+          "addr": "alpha1:7080",
+          "leader": true,
+          "lastUpdate": "1576112366"
+        },
+        "2": {
+          "id": "2",
+          "groupId": 1,
+          "addr": "alpha2:7080"
+        },
+        "3": {
+          "id": "3",
+          "groupId": 1,
+          "addr": "alpha3:7080"
+        }
+      },
+      "tablets": {
+        "counter.val": {
+          "groupId": 1,
+          "predicate": "counter.val"
+        },
+        "dgraph.type": {
+          "groupId": 1,
+          "predicate": "dgraph.type"
+        }
+      },
+      "checksum": "1021598189643258447"
+    }
+  },
+  "zeros": {
+    "1": {
+      "id": "1",
+      "addr": "zero1:5080",
+      "leader": true
+    },
+    "2": {
+      "id": "2",
+      "addr": "zero2:5080"
+    },
+    "3": {
+      "id": "3",
+      "addr": "zero3:5080"
+    }
+  },
+  "maxLeaseId": "10000",
+  "maxTxnTs": "10000",
+  "cid": "3602537a-ee49-43cb-9792-c766eea683dc",
+  "license": {
+    "maxNodes": "18446744073709551615",
+    "expiryTs": "1578704367",
+    "enabled": true
+  }
+}
+```
+
+Here’s the information the above JSON document provides:
+
+- Group 0
+  - members
+    - zero1:5080, id: 1, leader
+    - zero2:5080, id: 2
+    - zero3:5080, id: 3
+- Group 1
+    - members
+        - alpha1:7080, id: 1, leader
+        - alpha2:7080, id: 2
+        - alpha3:7080, id: 3
+    - predicates
+        - dgraph.type
+        - counter.val
+- Enterprise license
+    - Enabled
+    - maxNodes: unlimited
+    - License expires on Friday, January 10, 2020 4:59:27 PM GMT-08:00 (converted from epoch timestamp)
+- Other data:
+    - maxTxnTs
+        - The current max lease of transaction timestamps used to hand out start timestamps
+          and commit timestamps.
+        - This increments in batches of 10,000 IDs. Once the max lease is reached, another
+          10,000 IDs are leased. In the event that the Zero leader is lost, then the new
+          leader starts a brand new lease from maxTxnTs+1 . Any lost transaction IDs
+          in-between will never be used.
+        - An admin can use the Zero endpoint HTTP GET `/assign?what=timestamps&num=1000` to
+          increase the current transaction timestamp (in this case, by 1000). This is mainly
+          useful in special-case scenarios, e.g., using an existing p directory to a fresh
+          cluster in order to be able to query the latest data in the DB.
+    - maxLeaseId
+        - The current max lease of UIDs used for blank node UID assignment.
+        - This increments in batches of 10,000 IDs. Once the max lease is reached, another
+          10,000 IDs are leased. In the event that the Zero leader is lost, the new leader
+          starts a brand new lease from maxLeaseId+1. Any UIDs lost in-between will never
+          be used for blank-node UID assignment.
+        - An admin can use the Zero endpoint HTTP GET `/assign?what=uids&num=1000` to
+          reserve a range of UIDs (in this case, 1000) to use externally (Zero will NEVER
+          use these UIDs for blank node UID assignment, so the user can use the range
+          to assign UIDs manually to their own data sets.
+    - CID
+        - This is a unique UUID representing the *cluster-ID* for this cluster. It is generated
+          during the initial DB startup and is retained across restarts.
+    - Group checksum
+        - This is the checksum verification of the data per Alpha group. This is used internally
+          to verify group memberships in the event of a tablet move.
+
+{{% notice "note" %}}
+"tablet", "predicate", and "edge" are synonymous terms today. The future plan to
+improve data scalability is to shard a predicate into separate tablets that could
+be assigned to different groups.
+{{% /notice %}}
 
 ## TLS configuration
 
@@ -1454,6 +1602,36 @@ also need to install client certificate on your OS / browser:
 enabled the browser will prompt you for a client certificate to use. Select the
 certificate you've just installed in the step above and queries/mutations will
 succeed.
+
+### Using Curl with Client authentication
+
+When TLS is enabled, `curl` requests to Dgraph will need some specific options to work.
+
+If the `--tls_client_auth` option is set to `REQUEST`or `VERIFYIFGIVEN` (default),
+use the option `--cacert`. For instance (for an export request):
+
+```
+curl --cacert ./tls/ca.crt https://localhost:8080/admin/export
+```
+
+If the `--tls_client_auth` option is set to  `REQUIREANY` or  `REQUIREANDVERIFY`,
+in addition to the `--cacert` option, also use the `--cert` and `--key` options.
+For instance (for an export request):
+
+``` 
+curl --cacert ./tls/ca.crt --cert ./tls/node.crt --key ./tls/node.key https://localhost:8080/admin/export
+```
+
+Refer to the `curl` documentation for further information on its TLS options.
+
+### Access Data Using a Client
+
+Some examples of connecting via a [Client](/clients) when TLS is in use can be found below:
+
+- [dgraph4j](https://github.com/dgraph-io/dgraph4j#creating-a-secure-client-using-tls)
+- [dgraph-js](https://github.com/dgraph-io/dgraph-js/tree/master/examples/tls)
+- [dgo](https://github.com/dgraph-io/dgraph/blob/master/tlstest/acl/acl_over_tls_test.go)
+- [pydgraph](https://github.com/dgraph-io/pydgraph/tree/master/examples/tls)
 
 ### Troubleshooting Ratel's Client authentication
 
@@ -1740,6 +1918,7 @@ Dgraph alpha instances more evenly.
 
 ## Monitoring
 Dgraph exposes metrics via the `/debug/vars` endpoint in json format and the `/debug/prometheus_metrics` endpoint in Prometheus's text-based format. Dgraph doesn't store the metrics and only exposes the value of the metrics at that instant. You can either poll this endpoint to get the data in your monitoring systems or install **[Prometheus](https://prometheus.io/docs/introduction/install/)**. Replace targets in the below config file with the ip of your Dgraph instances and run prometheus using the command `prometheus -config.file my_config.yaml`.
+
 ```sh
 scrape_configs:
   - job_name: "dgraph"
@@ -1747,8 +1926,8 @@ scrape_configs:
     scrape_interval: "2s"
     static_configs:
     - targets:
-      - 172.31.9.133:6080 #For Dgraph zero, 6080 is the http endpoint exposing metrics.
-      - 172.31.15.230:8080
+      - 172.31.9.133:6080     # For Dgraph zero, 6080 is the http endpoint exposing metrics.
+      - 172.31.15.230:8080    # For Dgraph alpha, 8080 is the http endpoint exposing metrics.
       - 172.31.0.170:8080
       - 172.31.8.118:8080
 ```
@@ -1799,13 +1978,14 @@ operating system and how much is actively in use.
 
 The activity metrics let you track the mutations, queries, and proposals of an Dgraph instance.
 
- Metrics                          | Description
- -------                          | -----------
- `dgraph_goroutines_total`        | Total number of Goroutines currently running in Dgraph.
- `dgraph_active_mutations_total`  | Total number of mutations currently running.
- `dgraph_pending_proposals_total` | Total pending Raft proposals.
- `dgraph_pending_queries_total`   | Total number of queries in progress.
- `dgraph_num_queries_total`       | Total number of queries run in Dgraph.
+ Metrics                                            | Description
+ -------                                            | -----------
+ `go_goroutines`                                    | Total number of Goroutines currently running in Dgraph.
+ `dgraph_active_mutations_total`                    | Total number of mutations currently running.
+ `dgraph_pending_proposals_total`                   | Total pending Raft proposals.
+ `dgraph_pending_queries_total`                     | Total number of queries in progress.
+ `dgraph_num_queries_total{method="Server.Mutate"}` | Total number of mutations run in Dgraph.
+ `dgraph_num_queries_total{method="Server.Query"}`  | Total number of queries run in Dgraph.
 
 ### Health Metrics
 
@@ -1956,8 +2136,14 @@ Currently, "rdf" and "json" are the only formats supported.
 
 ### Shutdown Database
 
-A clean exit of a single Dgraph node is initiated by running the following command on that node.
+To shutdown a Dgraph cluster, shutdown all its Alpha and Zero nodes. This can be done in different ways,
+depending on how Dgraph was started (e.g. sending a `SIGTERM` to the processes, or using `systemctl stop service-name`
+if you are using systemd).
+
+A clean exit of a single Dgraph Alpha node can be initiated by running the following command on that node.
 {{% notice "warning" %}}This won't work if called from outside the server where Dgraph is running.
+You can specify a list or range of whitelisted IP addresses from which shutdown or other admin operations
+can be initiated using the `--whitelist` flag on `dgraph alpha`.
 {{% /notice %}}
 
 ```sh
@@ -1974,22 +2160,33 @@ To drop all data, you could send a `DropAll` request via `/alter` endpoint.
 
 Alternatively, you could:
 
-* [stop Dgraph]({{< relref "#shutdown-database" >}}) and wait for all writes to complete,
-* delete (maybe do an export first) the `p` and `w` directories, then
-* restart Dgraph.
+* [Shutdown Dgraph]({{< relref "#shutdown-database" >}}) and wait for all writes to complete,
+* Delete (maybe do an export first) the `p` and `w` directories, then
+* Restart Dgraph.
 
 ### Upgrade Database
 
-Doing periodic exports is always a good idea. This is particularly useful if you wish to upgrade Dgraph or reconfigure the sharding of a cluster. The following are the right steps safely export and restart.
+Doing periodic exports is always a good idea. This is particularly useful if you wish to upgrade Dgraph or reconfigure the sharding of a cluster. The following are the right steps to safely export and restart.
 
-- Start an [export]({{< relref "#export">}})
-- Ensure it's successful
-- Bring down the cluster
-- Run Dgraph using new data directories.
-- Reload the data via [bulk loader]({{< relref "#bulk-loader" >}}).
-- If all looks good, you can delete the old directories (export serves as an insurance)
+1. Start an [export]({{< relref "#export-database">}})
+2. Ensure it is successful
+3. [Shutdown Dgraph]({{< relref "#shutdown-database" >}}) and wait for all writes to complete
+4. Start a new Dgraph cluster using new data directories (this can be done by passing empty directories to the options `-p` and `-w` for Alphas and `-w` for Zeros)
+5. Reload the data via [bulk loader]({{< relref "#bulk-loader" >}})
+6. Verify the correctness of the new Dgraph cluster. If all looks good, you can delete the old directories (export serves as an insurance)
 
 These steps are necessary because Dgraph's underlying data format could have changed, and reloading the export avoids encoding incompatibilities.
+
+Blue-green deployment is a common approach to minimize downtime during the upgrade process. 
+This approach involves switching your application to read-only mode. To make sure that no mutations are executed during the maintenance window you can 
+do a rolling restart of all your Alpha using the option `--mutations disallow` when you restart the Alphas. This will ensure the cluster is in read-only mode.
+
+At this point your application can still read from the old cluster and you can perform the steps 4. and 5. described above.
+When the new cluster (that uses the upgraded version of Dgraph) is up and running, you can point your application to it, and shutdown the old cluster.
+
+{{% notice "note" %}}
+If you are upgrading from v1.0, please make sure you follow the schema migration steps described in [this section](/howto/#schema-types-scalar-uid-and-list-uid).
+{{% /notice %}}
 
 ### Post Installation
 

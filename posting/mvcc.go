@@ -33,6 +33,9 @@ import (
 var (
 	// ErrTsTooOld is returned when a transaction is too old to be applied.
 	ErrTsTooOld = errors.Errorf("Transaction is too old")
+	// ErrInvalidKey is returned when trying to read a posting list using
+	// an invalid key (e.g the key to a single part of a larger multi-part list).
+	ErrInvalidKey = errors.Errorf("cannot read posting list from this key")
 )
 
 // ShouldAbort returns whether the transaction should be aborted.
@@ -58,17 +61,17 @@ func (txn *Txn) addConflictKey(conflictKey uint64) {
 func (txn *Txn) FillContext(ctx *api.TxnContext, gid uint32) {
 	txn.Lock()
 	ctx.StartTs = txn.StartTs
+
 	for key := range txn.conflicts {
 		// We don'txn need to send the whole conflict key to Zero. Solving #2338
 		// should be done by sending a list of mutating predicates to Zero,
 		// along with the keys to be used for conflict detection.
 		fps := strconv.FormatUint(key, 36)
-		if !x.HasString(ctx.Keys, fps) {
-			ctx.Keys = append(ctx.Keys, fps)
-		}
+		ctx.Keys = append(ctx.Keys, fps)
 	}
-	txn.Unlock()
+	ctx.Keys = x.Unique(ctx.Keys)
 
+	txn.Unlock()
 	txn.Update()
 	txn.cache.fillPreds(ctx, gid)
 }
@@ -141,6 +144,20 @@ func unmarshalOrCopy(plist *pb.PostingList, item *badger.Item) error {
 // Use forward iterator with allversions enabled in iter options.
 // key would now be owned by the posting list. So, ensure that it isn't reused elsewhere.
 func ReadPostingList(key []byte, it *badger.Iterator) (*List, error) {
+	// Previously, ReadPostingList was not checking that a multi-part list could only
+	// be read via the main key. This lead to issues during rollup because multi-part
+	// lists ended up being rolled-up multiple times. This issue was caught by the
+	// uid-set Jepsen test.
+	pk, err := x.Parse(key)
+	if err != nil {
+		return nil, errors.Wrapf(err, "while reading posting list with key [%v]", key)
+	}
+	if pk.HasStartUid {
+		// Return a nil error. This is a temporary fix for this branch. The actual
+		// fix involves changing the data format so it cannot go in this release.
+		return nil, nil
+	}
+
 	l := new(List)
 	l.key = key
 	l.plist = new(pb.PostingList)
@@ -166,6 +183,7 @@ func ReadPostingList(key []byte, it *badger.Iterator) (*List, error) {
 				return nil, err
 			}
 			l.minTs = item.Version()
+
 			// No need to do Next here. The outer loop can take care of skipping
 			// more versions of the same key.
 			return l, nil
