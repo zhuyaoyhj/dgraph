@@ -86,6 +86,11 @@ func TestSystem(t *testing.T) {
 	t.Run("reverse count index", wrap(ReverseCountIndex))
 	t.Run("type predicate check", wrap(TypePredicateCheck))
 	t.Run("internal predicate check", wrap(InternalPredicateCheck))
+	t.Run("infer schema as list", wrap(InferSchemaAsList))
+	t.Run("infer schema as list JSON", wrap(InferSchemaAsListJSON))
+	t.Run("force schema as list JSON", wrap(ForceSchemaAsListJSON))
+	t.Run("force schema as single JSON", wrap(ForceSchemaAsSingleJSON))
+	t.Run("overwrite uid predicates", wrap(OverwriteUidPredicates))
 }
 
 func FacetJsonInputSupportsAnyOfTerms(t *testing.T, c *dgo.Dgraph) {
@@ -142,12 +147,18 @@ func FacetJsonInputSupportsAnyOfTerms(t *testing.T, c *dgo.Dgraph) {
 
 	//var respUser User
 	testutil.CompareJSON(t, fmt.Sprintf(`
-{"direct":[
-  {
-    "uid":"%s",
-    "access.to":[
-    {"uid":"%s","access.to|inherit":false,"access.to|permission":"WRITE"}]}]}
-`, assigned.Uids["a"], assigned.Uids["b"]), string(resp.GetJson()))
+	{
+		"direct":[
+			{
+				"uid":"%s",
+				"access.to":{
+						"uid":"%s"
+				},
+				"access.to|inherit": false,
+				"access.to|permission": "WRITE"
+			}
+		]
+	}`, assigned.Uids["a"], assigned.Uids["b"]), string(resp.GetJson()))
 }
 
 func ListWithLanguagesTest(t *testing.T, c *dgo.Dgraph) {
@@ -398,33 +409,39 @@ func FacetOrderTest(t *testing.T, c *dgo.Dgraph) {
 	txn = c.NewTxn()
 	resp, err := txn.Query(ctx, friendQuery)
 	require.NoError(t, err)
-	testutil.CompareJSON(t, `{
-		  "q": [
-		    {
-		      "friend": [
-		        {
-		          "friend|age": 15,
-		          "friend|car": "Tesla",
-		          "name": "Charlie"
-		        },
-		        {
-		          "name": "Bubble"
-		        },
-		        {
-		          "friend|age": 13,
-		          "friend|car": "Honda",
-		          "name": "Bob"
-		        },
-		        {
-		          "friend|age": 20,
-		          "friend|car": "Hyundai",
-		          "name": "Abc"
-		        }
-		      ],
-		      "name": "Alice"
-		    }
-		  ]
-		}`, string(resp.Json))
+	testutil.CompareJSON(t, `
+	{
+		"q":[
+			{
+				"friend":[
+					{
+						"name":"Charlie"
+					},
+					{
+						"name":"Bubble"
+					},
+					{
+						"name":"Bob"
+					},
+					{
+						"name":"Abc"
+					}
+				],
+				"friend|age":{
+					"0":15,
+					"2":13,
+					"3":20
+				},
+				"friend|car":{
+					"0":"Tesla",
+					"2":"Honda",
+					"3":"Hyundai"
+				},
+				"name":"Alice"
+			}
+		]
+	}
+	`, string(resp.Json))
 
 }
 
@@ -498,8 +515,29 @@ func SortFacetsReturnNil(t *testing.T, c *dgo.Dgraph) {
 	}`)
 	require.NoError(t, err)
 	require.JSONEq(t, `
-	{"q":[{"name":"Michael","friend":[{"name":"Charlie"},{"name":"Alice","friend|since":"2014-01-02T00:00:00Z"},{"name":"Sang Hyun","friend|since":"2012-01-02T00:00:00Z"}]}]}
-		`, string(resp.Json))
+		{
+			"q":[
+				{
+					"name":"Michael",
+					"friend":[
+						{
+							"name":"Charlie"
+						},
+						{
+							"name":"Alice"
+						},
+						{
+							"name":"Sang Hyun"
+						}
+					],
+					"friend|since":{
+						"1":"2014-01-02T00:00:00Z",
+						"2":"2012-01-02T00:00:00Z"
+					}
+				}
+			]
+		}
+	`, string(resp.Json))
 }
 
 func SchemaAfterDeleteNode(t *testing.T, c *dgo.Dgraph) {
@@ -924,7 +962,9 @@ func testTimeValue(t *testing.T, c *dgo.Dgraph, timeBytes []byte) {
 
 	q := `query test($id: string) {
 		  me(func: uid($id)) {
-			friend @facets
+			friend @facets {
+				uid
+			}
 		  }
 		}`
 
@@ -1733,4 +1773,135 @@ func InternalPredicateCheck(t *testing.T, c *dgo.Dgraph) {
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "Cannot create user-defined predicate with internal name uid")
+}
+
+func InferSchemaAsList(t *testing.T, c *dgo.Dgraph) {
+	txn := c.NewTxn()
+	_, err := txn.Mutate(context.Background(), &api.Mutation{
+		CommitNow: true,
+		SetNquads: []byte(`
+		_:bob <name> "Bob" .
+		_:bob <name> "Bob Marley" .
+		_:alice <nickname> "Alice" .
+		_:carol <nickname> "Carol" .`),
+	})
+
+	require.NoError(t, err)
+	query := `schema(preds: [name, nickname]) {
+		list
+	}`
+	resp, err := c.NewReadOnlyTxn().Query(context.Background(), query)
+	require.NoError(t, err)
+	testutil.CompareJSON(t, `{"schema": [{"predicate":"name", "list":true},
+		{"predicate":"nickname"}]}`, string(resp.Json))
+}
+
+func InferSchemaAsListJSON(t *testing.T, c *dgo.Dgraph) {
+	txn := c.NewTxn()
+	_, err := txn.Mutate(context.Background(), &api.Mutation{
+		CommitNow: true,
+		SetJson: []byte(`
+			[{"name": ["Bob","Bob Marley"]}, {"nickname": "Alice"}, {"nickname": "Carol"}]`),
+	})
+
+	require.NoError(t, err)
+	query := `schema(preds: [name, nickname]) {
+		list
+	}`
+	resp, err := c.NewReadOnlyTxn().Query(context.Background(), query)
+	require.NoError(t, err)
+	testutil.CompareJSON(t, `{"schema": [{"predicate":"name", "list":true},
+		{"predicate":"nickname"}]}`, string(resp.Json))
+}
+
+func ForceSchemaAsListJSON(t *testing.T, c *dgo.Dgraph) {
+	txn := c.NewTxn()
+	_, err := txn.Mutate(context.Background(), &api.Mutation{
+		CommitNow: true,
+		SetJson: []byte(`
+			[{"name": ["Bob"]}, {"nickname": "Alice"}, {"nickname": "Carol"}]`),
+	})
+
+	require.NoError(t, err)
+	query := `schema(preds: [name, nickname]) {
+		list
+	}`
+	resp, err := c.NewReadOnlyTxn().Query(context.Background(), query)
+	require.NoError(t, err)
+	testutil.CompareJSON(t, `{"schema": [{"predicate":"name", "list":true},
+		{"predicate":"nickname"}]}`, string(resp.Json))
+}
+
+func ForceSchemaAsSingleJSON(t *testing.T, c *dgo.Dgraph) {
+	txn := c.NewTxn()
+	_, err := txn.Mutate(context.Background(), &api.Mutation{
+		CommitNow: true,
+		SetJson: []byte(`
+			[{"person": {"name": "Bob"}}, {"nickname": "Alice"}, {"nickname": "Carol"}]`),
+	})
+
+	require.NoError(t, err)
+	query := `schema(preds: [person, nickname]) {
+		list
+	}`
+	resp, err := c.NewReadOnlyTxn().Query(context.Background(), query)
+	require.NoError(t, err)
+	testutil.CompareJSON(t, `{"schema": [{"predicate":"person"}, {"predicate":"nickname"}]}`,
+		string(resp.Json))
+}
+
+func OverwriteUidPredicates(t *testing.T, c *dgo.Dgraph) {
+	ctx := context.Background()
+	op := &api.Operation{DropAll: true}
+	require.NoError(t, c.Alter(ctx, op))
+
+	op = &api.Operation{
+		Schema: `
+		best_friend: uid .
+		name: string @index(exact) .`,
+	}
+	err := c.Alter(ctx, op)
+	require.NoError(t, err)
+
+	txn := c.NewTxn()
+	_, err = txn.Mutate(context.Background(), &api.Mutation{
+		CommitNow: true,
+		SetNquads: []byte(`
+		_:alice <name> "Alice" .
+		_:bob <name> "Bob" .
+		_:alice <best_friend> _:bob .`),
+	})
+	require.NoError(t, err)
+
+	q := `{
+  me(func: eq(name, Alice)) {
+	name
+	best_friend {
+		name
+	}
+  }
+}`
+	resp, err := c.NewReadOnlyTxn().Query(ctx, q)
+	require.NoError(t, err)
+	testutil.CompareJSON(t, `{"me":[{"name":"Alice","best_friend": {"name": "Bob"}}]}`,
+		string(resp.GetJson()))
+
+	upsertQuery := `query { alice as var(func: eq(name, Alice)) }`
+	upsertMutation := &api.Mutation{
+		SetNquads: []byte(`
+		_:carol <name> "Carol" .
+		uid(alice) <best_friend> _:carol .`),
+	}
+	req := &api.Request{
+		Query:     upsertQuery,
+		Mutations: []*api.Mutation{upsertMutation},
+		CommitNow: true,
+	}
+	_, err = c.NewTxn().Do(ctx, req)
+	require.NoError(t, err)
+
+	resp, err = c.NewReadOnlyTxn().Query(ctx, q)
+	require.NoError(t, err)
+	testutil.CompareJSON(t, `{"me":[{"name":"Alice","best_friend": {"name": "Carol"}}]}`,
+		string(resp.GetJson()))
 }

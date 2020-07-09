@@ -24,6 +24,7 @@ import (
 	"hash/adler32"
 	"io"
 	"io/ioutil"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -71,7 +72,7 @@ type options struct {
 }
 
 type state struct {
-	opt           options
+	opt           *options
 	prog          *progress
 	xids          *xidmap.XidMap
 	schema        *schemaStore
@@ -88,7 +89,11 @@ type loader struct {
 	zero    *grpc.ClientConn
 }
 
-func newLoader(opt options) *loader {
+func newLoader(opt *options) *loader {
+	if opt == nil {
+		log.Fatalf("Cannot create loader with nil options.")
+	}
+
 	fmt.Printf("Connecting to zero at %s\n", opt.ZeroAddr)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
