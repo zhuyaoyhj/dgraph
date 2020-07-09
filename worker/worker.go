@@ -24,6 +24,7 @@ import (
 	"math"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/dgraph-io/badger/v2"
 	badgerpb "github.com/dgraph-io/badger/v2/pb"
@@ -42,8 +43,7 @@ var (
 	pstore       *badger.DB
 	workerServer *grpc.Server
 	raftServer   conn.RaftServer
-	// ShutdownCh is used while trying to shutdown the server.
-	ShutdownCh chan struct{}
+	rt           *restoreTracker
 
 	// In case of flaky network connectivity we would try to keep upto maxPendingEntries in wal
 	// so that the nodes which have lagged behind leader can just replay entries instead of
@@ -58,6 +58,7 @@ func workerPort() int {
 // Init initializes this package.
 func Init(ps *badger.DB) {
 	pstore = ps
+	rt = newRestoreTracker()
 	// needs to be initialized after group config
 	limiter = rateLimiter{c: sync.NewCond(&sync.Mutex{}), max: x.WorkerConfig.NumPendingProposals}
 	go limiter.bleed()
@@ -138,4 +139,19 @@ func UpdateLruMb(memoryMB float64) error {
 	posting.Config.AllottedMemory = memoryMB
 	posting.Config.Unlock()
 	return nil
+}
+
+// UpdateLogRequest updates value of x.WorkerConfig.LogRequest.
+func UpdateLogRequest(val bool) {
+	if val {
+		atomic.StoreInt32(&x.WorkerConfig.LogRequest, 1)
+		return
+	}
+
+	atomic.StoreInt32(&x.WorkerConfig.LogRequest, 0)
+}
+
+// LogRequestEnabled returns true if logging of requests is enabled otherwise false.
+func LogRequestEnabled() bool {
+	return atomic.LoadInt32(&x.WorkerConfig.LogRequest) > 0
 }

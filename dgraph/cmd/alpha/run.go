@@ -30,10 +30,11 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/dgraph-io/dgraph/graphql/web"
 
 	"github.com/dgraph-io/badger/v2/y"
 	"github.com/dgraph-io/dgo/v200/protos/api"
@@ -45,7 +46,6 @@ import (
 	"github.com/dgraph-io/dgraph/tok"
 	"github.com/dgraph-io/dgraph/worker"
 	"github.com/dgraph-io/dgraph/x"
-
 	"github.com/golang/glog"
 	"github.com/pkg/errors"
 	"github.com/spf13/cast"
@@ -76,6 +76,9 @@ var (
 
 	// Alpha is the sub-command invoked when running "dgraph alpha".
 	Alpha x.SubCommand
+
+	// need this here to refer it in admin_backup.go
+	adminServer web.IServeGraphQL
 )
 
 func init() {
@@ -110,10 +113,7 @@ they form a Raft group and provide synchronous replication.
 			" mmap consumes more RAM, but provides better performance.")
 	flag.Int("badger.compression_level", 3,
 		"The compression level for Badger. A higher value uses more resources.")
-	flag.String("encryption_key_file", "",
-		"The file that stores the encryption key. The key size must be 16, 24, or 32 bytes long. "+
-			"The key size determines the corresponding block size for AES encryption "+
-			"(AES-128, AES-192, and AES-256 respectively). Enterprise feature.")
+	enc.RegisterFlags(flag)
 
 	// Snapshot and Transactions.
 	flag.Int("snapshot_after", 10000,
@@ -125,7 +125,7 @@ they form a Raft group and provide synchronous replication.
 			" transaction is determined by its last mutation.")
 
 	// OpenCensus flags.
-	flag.Float64("trace", 1.0, "The ratio of queries to trace.")
+	flag.Float64("trace", 0.01, "The ratio of queries to trace.")
 	flag.String("jaeger.collector", "", "Send opencensus traces to Jaeger.")
 	// See https://github.com/DataDog/opencensus-go-exporter-datadog/issues/34
 	// about the status of supporting annotation logs through the datadog exporter
@@ -195,6 +195,7 @@ they form a Raft group and provide synchronous replication.
 
 	flag.Bool("graphql_introspection", true, "Set to false for no GraphQL schema introspection")
 	flag.Bool("ludicrous_mode", false, "Run alpha in ludicrous mode")
+	flag.Bool("graphql_extensions", true, "Set to false if extensions not required in GraphQL response body")
 	flag.Duration("graphql_poll_interval", time.Second, "polling interval for graphql subscription.")
 }
 
@@ -372,8 +373,8 @@ func setupListener(addr string, port int) (net.Listener, error) {
 	return net.Listen("tcp", fmt.Sprintf("%s:%d", addr, port))
 }
 
-func serveGRPC(l net.Listener, tlsCfg *tls.Config, wg *sync.WaitGroup) {
-	defer wg.Done()
+func serveGRPC(l net.Listener, tlsCfg *tls.Config, closer *y.Closer) {
+	defer closer.Done()
 
 	x.RegisterExporters(Alpha.Conf, "dgraph.alpha")
 
@@ -395,8 +396,8 @@ func serveGRPC(l net.Listener, tlsCfg *tls.Config, wg *sync.WaitGroup) {
 	s.Stop()
 }
 
-func serveHTTP(l net.Listener, tlsCfg *tls.Config, wg *sync.WaitGroup) {
-	defer wg.Done()
+func serveHTTP(l net.Listener, tlsCfg *tls.Config, closer *y.Closer) {
+	defer closer.Done()
 	srv := &http.Server{
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 600 * time.Second,
@@ -453,11 +454,6 @@ func setupServer(closer *y.Closer) {
 	// TODO: Figure out what this is for?
 	http.HandleFunc("/debug/store", storeStatsHandler)
 
-	http.HandleFunc("/admin/shutdown", shutDownHandler)
-	http.HandleFunc("/admin/draining", drainingHandler)
-	http.HandleFunc("/admin/export", exportHandler)
-	http.HandleFunc("/admin/config/lru_mb", memoryLimitHandler)
-
 	introspection := Alpha.Conf.GetBool("graphql_introspection")
 
 	// Global Epoch is a lockless synchronization mechanism for graphql service.
@@ -474,25 +470,52 @@ func setupServer(closer *y.Closer) {
 	// The global epoch is set to maxUint64 while exiting the server.
 	// By using this information polling goroutine terminates the subscription.
 	globalEpoch := uint64(0)
-	mainServer, adminServer := admin.NewServers(introspection, &globalEpoch, closer)
+	mainServer, adminServer, gqlHealthStore := admin.NewServers(introspection, &globalEpoch, closer)
 	http.Handle("/graphql", mainServer.HTTPHandler())
-
-	whitelist := func(h http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !handlerInit(w, r, map[string]bool{
-				http.MethodPost:    true,
-				http.MethodGet:     true,
-				http.MethodOptions: true,
-			}) {
-				return
-			}
-			h.ServeHTTP(w, r)
-		})
-	}
-	http.Handle("/admin", whitelist(adminServer.HTTPHandler()))
-	http.HandleFunc("/admin/schema", func(w http.ResponseWriter, r *http.Request) {
-		adminSchemaHandler(w, r, adminServer)
+	http.HandleFunc("/probe/graphql", func(w http.ResponseWriter, r *http.Request) {
+		healthStatus := gqlHealthStore.GetHealth()
+		httpStatusCode := http.StatusOK
+		if !healthStatus.Healthy {
+			httpStatusCode = http.StatusServiceUnavailable
+		}
+		w.WriteHeader(httpStatusCode)
+		w.Header().Set("Content-Type", "application/json")
+		x.Check2(w.Write([]byte(fmt.Sprintf(`{"status":"%s"}`, healthStatus.StatusMsg))))
 	})
+	http.Handle("/admin", allowedMethodsHandler(allowedMethods{
+		http.MethodGet:     true,
+		http.MethodPost:    true,
+		http.MethodOptions: true,
+	}, adminAuthHandler(adminServer.HTTPHandler())))
+
+	http.Handle("/admin/schema", adminAuthHandler(http.HandlerFunc(func(w http.ResponseWriter,
+		r *http.Request) {
+		adminSchemaHandler(w, r, adminServer)
+	})))
+
+	http.Handle("/admin/shutdown", allowedMethodsHandler(allowedMethods{http.MethodGet: true},
+		adminAuthHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			shutDownHandler(w, r, adminServer)
+		}))))
+
+	http.Handle("/admin/draining", allowedMethodsHandler(allowedMethods{
+		http.MethodPut:  true,
+		http.MethodPost: true,
+	}, adminAuthHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		drainingHandler(w, r, adminServer)
+	}))))
+
+	http.Handle("/admin/export", allowedMethodsHandler(allowedMethods{http.MethodGet: true},
+		adminAuthHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			exportHandler(w, r, adminServer)
+		}))))
+
+	http.Handle("/admin/config/lru_mb", allowedMethodsHandler(allowedMethods{
+		http.MethodGet: true,
+		http.MethodPut: true,
+	}, adminAuthHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		memoryLimitHandler(w, r, adminServer)
+	}))))
 
 	addr := fmt.Sprintf("%s:%d", laddr, httpPort())
 	glog.Infof("Bringing up GraphQL HTTP API at %s/graphql", addr)
@@ -504,19 +527,19 @@ func setupServer(closer *y.Closer) {
 	http.HandleFunc("/", homeHandler)
 	http.HandleFunc("/ui/keywords", keywordHandler)
 
-	// Initilize the servers.
-	var wg sync.WaitGroup
-	wg.Add(3)
-	go serveGRPC(grpcListener, tlsCfg, &wg)
-	go serveHTTP(httpListener, tlsCfg, &wg)
+	// Initialize the servers.
+	admin.ServerCloser = y.NewCloser(3)
+	go serveGRPC(grpcListener, tlsCfg, admin.ServerCloser)
+	go serveHTTP(httpListener, tlsCfg, admin.ServerCloser)
 
 	if Alpha.Conf.GetBool("telemetry") {
 		go edgraph.PeriodicallyPostTelemetry()
 	}
 
 	go func() {
-		defer wg.Done()
-		<-worker.ShutdownCh
+		defer admin.ServerCloser.Done()
+
+		<-admin.ServerCloser.HasBeenClosed()
 		atomic.StoreUint64(&globalEpoch, math.MaxUint64)
 
 		// Stops grpc/http servers; Already accepted connections are not closed.
@@ -530,29 +553,31 @@ func setupServer(closer *y.Closer) {
 
 	glog.Infoln("gRPC server started.  Listening on port", grpcPort())
 	glog.Infoln("HTTP server started.  Listening on port", httpPort())
-	wg.Wait()
+
+	admin.ServerCloser.Wait()
 }
 
 func run() {
+	var err error
+	if Alpha.Conf.GetBool("enable_sentry") {
+		x.InitSentry(enc.EeBuild)
+		defer x.FlushSentry()
+		x.ConfigureSentryScope("alpha")
+		x.WrapPanics()
+		x.SentryOptOutNote()
+	}
 	bindall = Alpha.Conf.GetBool("bindall")
 
 	opts := worker.Options{
 		BadgerTables:           Alpha.Conf.GetString("badger.tables"),
 		BadgerVlog:             Alpha.Conf.GetString("badger.vlog"),
-		BadgerKeyFile:          Alpha.Conf.GetString("encryption_key_file"),
 		BadgerCompressionLevel: Alpha.Conf.GetInt("badger.compression_level"),
-
-		PostingDir: Alpha.Conf.GetString("postings"),
-		WALDir:     Alpha.Conf.GetString("wal"),
+		PostingDir:             Alpha.Conf.GetString("postings"),
+		WALDir:                 Alpha.Conf.GetString("wal"),
 
 		MutationsMode:  worker.AllowMutations,
 		AuthToken:      Alpha.Conf.GetString("auth_token"),
 		AllottedMemory: Alpha.Conf.GetFloat64("lru_mb"),
-	}
-
-	// OSS, non-nil key file --> crash
-	if !enc.EeBuild && opts.BadgerKeyFile != "" {
-		glog.Fatalf("Cannot enable encryption: %s", x.ErrNotSupported)
 	}
 
 	secretFile := Alpha.Conf.GetString("acl_secret_file")
@@ -608,7 +633,10 @@ func run() {
 		AbortOlderThan:      abortDur,
 		StartTime:           startTime,
 		LudicrousMode:       Alpha.Conf.GetBool("ludicrous_mode"),
-		BadgerKeyFile:       worker.Config.BadgerKeyFile,
+	}
+	if x.WorkerConfig.EncryptionKey, err = enc.ReadKey(Alpha.Conf); err != nil {
+		glog.Infof("unable to read key %v", err)
+		return
 	}
 
 	setupCustomTokenizers()
@@ -617,13 +645,7 @@ func run() {
 	x.Config.QueryEdgeLimit = cast.ToUint64(Alpha.Conf.GetString("query_edge_limit"))
 	x.Config.NormalizeNodeLimit = cast.ToInt(Alpha.Conf.GetString("normalize_node_limit"))
 	x.Config.PollInterval = Alpha.Conf.GetDuration("graphql_poll_interval")
-
-	if Alpha.Conf.GetBool("enable_sentry") {
-		x.InitSentry(enc.EeBuild)
-		defer x.FlushSentry()
-		x.ConfigureSentryScope("alpha")
-		x.WrapPanics()
-	}
+	x.Config.GraphqlExtension = Alpha.Conf.GetBool("graphql_extensions")
 
 	x.PrintVersion()
 	glog.Infof("x.Config: %+v", x.Config)
@@ -652,7 +674,6 @@ func run() {
 
 	// setup shutdown os signal handler
 	sdCh := make(chan os.Signal, 3)
-	worker.ShutdownCh = make(chan struct{})
 
 	defer func() {
 		signal.Stop(sdCh)
@@ -664,9 +685,9 @@ func run() {
 		var numShutDownSig int
 		for range sdCh {
 			select {
-			case <-worker.ShutdownCh:
+			case <-admin.ServerCloser.HasBeenClosed():
 			default:
-				close(worker.ShutdownCh)
+				admin.ServerCloser.Signal()
 			}
 			numShutDownSig++
 			glog.Infoln("Caught Ctrl-C. Terminating now (this may take a few seconds)...")
@@ -698,5 +719,6 @@ func run() {
 	adminCloser.SignalAndWait()
 	glog.Info("Disposing server state.")
 	worker.State.Dispose()
+	x.RemoveCidFile()
 	glog.Infoln("Server shutdown. Bye!")
 }

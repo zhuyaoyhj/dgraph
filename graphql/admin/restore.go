@@ -27,38 +27,60 @@ import (
 )
 
 type restoreInput struct {
-	Location     string
-	BackupId     string
-	KeyFile      string
-	AccessKey    string
-	SecretKey    string
-	SessionToken string
-	Anonymous    bool
+	Location          string
+	BackupId          string
+	EncryptionKeyFile string
+	AccessKey         string
+	SecretKey         string
+	SessionToken      string
+	Anonymous         bool
+	VaultAddr         string
+	VaultRoleIDFile   string
+	VaultSecretIDFile string
+	VaultPath         string
+	VaultField        string
+	VaultFormat       string
 }
 
 func resolveRestore(ctx context.Context, m schema.Mutation) (*resolve.Resolved, bool) {
-
 	input, err := getRestoreInput(m)
 	if err != nil {
-		return emptyResult(m, err), false
+		return resolve.EmptyResult(m, err), false
 	}
 
 	req := pb.RestoreRequest{
-		Location:     input.Location,
-		BackupId:     input.BackupId,
-		KeyFile:      input.KeyFile,
-		AccessKey:    input.AccessKey,
-		SecretKey:    input.SecretKey,
-		SessionToken: input.SessionToken,
-		Anonymous:    input.Anonymous,
+		Location:          input.Location,
+		BackupId:          input.BackupId,
+		EncryptionKeyFile: input.EncryptionKeyFile,
+		AccessKey:         input.AccessKey,
+		SecretKey:         input.SecretKey,
+		SessionToken:      input.SessionToken,
+		Anonymous:         input.Anonymous,
+		VaultAddr:         input.VaultAddr,
+		VaultRoleidFile:   input.VaultRoleIDFile,
+		VaultSecretidFile: input.VaultSecretIDFile,
+		VaultPath:         input.VaultPath,
+		VaultField:        input.VaultField,
+		VaultFormat:       input.VaultFormat,
 	}
-	err = worker.ProcessRestoreRequest(context.Background(), &req)
+	restoreId, err := worker.ProcessRestoreRequest(context.Background(), &req)
 	if err != nil {
-		return emptyResult(m, err), false
+		worker.DeleteRestoreId(restoreId)
+		return &resolve.Resolved{
+			Data: map[string]interface{}{m.Name(): map[string]interface{}{
+				"code": "Failure",
+			}},
+			Field: m,
+			Err:   schema.GQLWrapLocationf(err, m.Location(), "resolving %s failed", m.Name()),
+		}, false
 	}
 
 	return &resolve.Resolved{
-		Data:  map[string]interface{}{m.Name(): response("Success", "Restore completed.")},
+		Data: map[string]interface{}{m.Name(): map[string]interface{}{
+			"code":      "Success",
+			"message":   "Restore operation started.",
+			"restoreId": restoreId,
+		}},
 		Field: m,
 	}, true
 }

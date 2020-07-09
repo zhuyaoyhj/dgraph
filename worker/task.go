@@ -50,7 +50,7 @@ func invokeNetworkRequest(ctx context.Context, addr string,
 	f func(context.Context, pb.WorkerClient) (interface{}, error)) (interface{}, error) {
 	pl, err := conn.GetPools().Get(addr)
 	if err != nil {
-		return &pb.Result{}, errors.Wrapf(err, "dispatchTaskOverNetwork: while retrieving connection.")
+		return nil, errors.Wrapf(err, "dispatchTaskOverNetwork: while retrieving connection.")
 	}
 
 	con := pl.Get()
@@ -134,9 +134,9 @@ func ProcessTaskOverNetwork(ctx context.Context, q *pb.Query) (*pb.Result, error
 	gid, err := groups().BelongsToReadOnly(attr, q.ReadTs)
 	switch {
 	case err != nil:
-		return &pb.Result{}, err
+		return nil, err
 	case gid == 0:
-		return &pb.Result{}, errNonExistentTablet
+		return nil, errNonExistentTablet
 	}
 
 	span := otrace.FromContext(ctx)
@@ -155,7 +155,7 @@ func ProcessTaskOverNetwork(ctx context.Context, q *pb.Query) (*pb.Result, error
 			return c.ServeTask(ctx, q)
 		})
 	if err != nil {
-		return &pb.Result{}, err
+		return nil, err
 	}
 
 	reply := result.(*pb.Result)
@@ -356,6 +356,15 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 	}
 	if srcFn.n == 0 {
 		return nil
+	}
+
+	// srcFn.n should be equal to len(q.UidList.Uids) for below implementation(DivideAndRule and
+	// calculate) to work correctly. But we have seen some panics while forming DataKey in
+	// calculate(). panic is of the form "index out of range [4] with length 1". Hence return error
+	// from here when srcFn.n != len(q.UidList.Uids).
+	if srcFn.n != len(q.UidList.Uids) {
+		return errors.Errorf("srcFn.n: %d is not equal to len(q.UidList.Uids): %d, srcFn: %+v in "+
+			"handleValuePostings", srcFn.n, len(q.UidList.GetUids()), srcFn)
 	}
 
 	// This function has small boilerplate as handleUidPostings, around how the code gets
@@ -849,7 +858,7 @@ func processTask(ctx context.Context, q *pb.Query, gid uint32) (*pb.Result, erro
 	span.Annotatef(nil, "Waiting for startTs: %d at node: %d, gid: %d",
 		q.ReadTs, groups().Node.Id, gid)
 	if err := posting.Oracle().WaitForTs(ctx, q.ReadTs); err != nil {
-		return &pb.Result{}, err
+		return nil, err
 	}
 	if span != nil {
 		maxAssigned := posting.Oracle().MaxAssigned()
@@ -857,7 +866,7 @@ func processTask(ctx context.Context, q *pb.Query, gid uint32) (*pb.Result, erro
 			q.Attr, q.ReadTs, maxAssigned)
 	}
 	if err := groups().ChecksumsMatch(ctx); err != nil {
-		return &pb.Result{}, err
+		return nil, err
 	}
 	span.Annotatef(nil, "Done waiting for checksum match")
 
@@ -870,11 +879,11 @@ func processTask(ctx context.Context, q *pb.Query, gid uint32) (*pb.Result, erro
 	knownGid, err := groups().BelongsToReadOnly(q.Attr, q.ReadTs)
 	switch {
 	case err != nil:
-		return &pb.Result{}, err
+		return nil, err
 	case knownGid == 0:
-		return &pb.Result{}, errNonExistentTablet
+		return nil, errNonExistentTablet
 	case knownGid != groups().groupId():
-		return &pb.Result{}, errUnservedTablet
+		return nil, errUnservedTablet
 	}
 
 	var qs queryState
@@ -886,7 +895,7 @@ func processTask(ctx context.Context, q *pb.Query, gid uint32) (*pb.Result, erro
 
 	out, err := qs.helpProcessTask(ctx, q, gid)
 	if err != nil {
-		return &pb.Result{}, err
+		return nil, err
 	}
 	return out, nil
 }
@@ -1851,17 +1860,17 @@ func (w *grpcWorker) ServeTask(ctx context.Context, q *pb.Query) (*pb.Result, er
 	defer span.End()
 
 	if ctx.Err() != nil {
-		return &pb.Result{}, ctx.Err()
+		return nil, ctx.Err()
 	}
 
 	gid, err := groups().BelongsToReadOnly(q.Attr, q.ReadTs)
 	switch {
 	case err != nil:
-		return &pb.Result{}, err
+		return nil, err
 	case gid == 0:
-		return &pb.Result{}, errNonExistentTablet
+		return nil, errNonExistentTablet
 	case gid != groups().groupId():
-		return &pb.Result{}, errUnservedTablet
+		return nil, errUnservedTablet
 	}
 
 	var numUids int
@@ -1871,7 +1880,7 @@ func (w *grpcWorker) ServeTask(ctx context.Context, q *pb.Query) (*pb.Result, er
 	span.Annotatef(nil, "Attribute: %q NumUids: %v groupId: %v ServeTask", q.Attr, numUids, gid)
 
 	if !groups().ServesGroup(gid) {
-		return &pb.Result{}, errors.Errorf(
+		return nil, errors.Errorf(
 			"Temporary error, attr: %q groupId: %v Request sent to wrong server", q.Attr, gid)
 	}
 
@@ -1887,7 +1896,7 @@ func (w *grpcWorker) ServeTask(ctx context.Context, q *pb.Query) (*pb.Result, er
 
 	select {
 	case <-ctx.Done():
-		return &pb.Result{}, ctx.Err()
+		return nil, ctx.Err()
 	case reply := <-c:
 		return reply.result, reply.err
 	}
@@ -2173,7 +2182,8 @@ func (qs *queryState) evaluate(cp countParams, out *pb.Result) error {
 
 	for itr.Seek(countKey); itr.Valid(); itr.Next() {
 		item := itr.Item()
-		pl, err := qs.cache.Get(item.Key())
+		var key []byte
+		pl, err := qs.cache.Get(item.KeyCopy(key))
 		if err != nil {
 			return err
 		}

@@ -22,20 +22,39 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/pkg/errors"
 	"github.com/vektah/gqlparser/v2/ast"
 )
 
+func validateUrl(rawURL string) error {
+	u, err := url.ParseRequestURI(rawURL)
+	if err != nil {
+		return err
+	}
+
+	if u.RawQuery != "" {
+		return fmt.Errorf("POST method cannot have query parameters in url: %s", rawURL)
+	}
+	return nil
+}
+
+type IntrospectionRequest struct {
+	Query string `json:"query"`
+}
+
 // introspectRemoteSchema introspectes remote schema
-func introspectRemoteSchema(url string) (*introspectedSchema, error) {
-	param := &Request{
+func introspectRemoteSchema(url string, headers http.Header) (*introspectedSchema, error) {
+	if err := validateUrl(url); err != nil {
+		return nil, err
+	}
+	param := &IntrospectionRequest{
 		Query: introspectionQuery,
 	}
 
 	body, err := json.Marshal(param)
-
 	if err != nil {
 		return nil, err
 	}
@@ -45,6 +64,9 @@ func introspectRemoteSchema(url string) (*introspectedSchema, error) {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	for k := range headers {
+		req.Header.Set(k, headers.Get(k))
+	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -56,8 +78,8 @@ func introspectRemoteSchema(url string) (*introspectedSchema, error) {
 		return nil, err
 	}
 	result := &introspectedSchema{}
-
-	return result, json.Unmarshal(body, result)
+	return result, errors.Wrapf(json.Unmarshal(body, result),
+		"while json unmarshaling result from remote introspection query")
 }
 
 const (
@@ -162,10 +184,12 @@ type remoteGraphqlMetadata struct {
 	// graphqlOpDef is the Operation Definition for the operation given in @custom->http->graphql
 	// The operation can only be a query or mutation
 	graphqlOpDef *ast.OperationDefinition
-	// isBatch tells whether it is single/batch operation for resolving custom fields
+	// isBatch tells whether it is SINGLE/BATCH mode for resolving custom fields
 	isBatch bool
 	// url is the url of remote graphql endpoint
 	url string
+	// headers sent to the remote graphql endpoint for introspection
+	headers http.Header
 	// schema given by the user.
 	schema *ast.Schema
 }
@@ -206,7 +230,7 @@ type remoteArgMetadata struct {
 // validates the graphql given in @custom->http->graphql by introspecting remote schema.
 // It assumes that the graphql syntax is correct, only remote validation is needed.
 func validateRemoteGraphql(metadata *remoteGraphqlMetadata) error {
-	remoteIntrospection, err := introspectRemoteSchema(metadata.url)
+	remoteIntrospection, err := introspectRemoteSchema(metadata.url, metadata.headers)
 	if err != nil {
 		return err
 	}
@@ -274,11 +298,11 @@ func validateRemoteGraphql(metadata *remoteGraphqlMetadata) error {
 	givenQryVarTypes := getVarTypesAsMap(metadata.parentField, metadata.parentType)
 	remoteQryArgMetadata := getRemoteQueryArgMetadata(introspectedRemoteQuery)
 
-	// verify remote query arg format for batch operations
+	// verify remote query arg format for BATCH mode
 	if metadata.isBatch {
 		if len(remoteQryArgMetadata.typMap) != 1 {
 			return errors.Errorf("remote %s `%s` accepts %d arguments, It must have only one "+
-				"argument of the form `[{param1: $var1, param2: $var2, ...}]` for batch operation.",
+				"argument of the form `[{param1: $var1, param2: $var2, ...}]` for BATCH mode.",
 				operationType, givenQuery.Name, len(remoteQryArgMetadata.typMap))
 		}
 		for argName, inputTyp := range remoteQryArgMetadata.typMap {
@@ -295,7 +319,7 @@ func validateRemoteGraphql(metadata *remoteGraphqlMetadata) error {
 					Kind == nonNull && inputTyp.OfType.OfType.OfType != nil && inputTyp.
 					OfType.OfType.OfType.Kind == inputObject)) {
 				return errors.Errorf("argument `%s` for given %s `%s` must be of the form `[{param1"+
-					": $var1, param2: $var2, ...}]` for batch operations in remote %s.", argName,
+					": $var1, param2: $var2, ...}]` for BATCH mode in remote %s.", argName,
 					operationType, givenQuery.Name, operationType)
 			}
 			inputTypName := inputTyp.NamedType()
@@ -309,16 +333,18 @@ func validateRemoteGraphql(metadata *remoteGraphqlMetadata) error {
 		}
 	}
 
-	// check whether args of given query/mutation match the args of remote query/mutation
-	err = matchArgSignature(&argMatchingMetadata{
-		givenArgVals:  givenQryArgVals,
-		givenVarTypes: givenQryVarTypes,
-		remoteArgMd:   remoteQryArgMetadata,
-		remoteTypes:   remoteTypes,
-		givenQryName:  &givenQuery.Name,
-		operationType: &operationType,
-		schema:        metadata.schema,
-	})
+	if !metadata.isBatch {
+		// check whether args of given query/mutation match the args of remote query/mutation
+		err = matchArgSignature(&argMatchingMetadata{
+			givenArgVals:  givenQryArgVals,
+			givenVarTypes: givenQryVarTypes,
+			remoteArgMd:   remoteQryArgMetadata,
+			remoteTypes:   remoteTypes,
+			givenQryName:  &givenQuery.Name,
+			operationType: &operationType,
+			schema:        metadata.schema,
+		})
+	}
 
 	return err
 }
@@ -329,38 +355,55 @@ func missingRemoteTypeError(typName string) error {
 
 func matchDeepTypes(remoteType *gqlType, remoteTypes map[string]*types,
 	localSchema *ast.Schema) error {
-	expandedTypes, err := expandType(remoteType, remoteTypes)
+	_, err := expandType(remoteType, remoteTypes)
 	if err != nil {
 		return err
 	}
-	return matchRemoteTypes(expandedTypes, localSchema)
+	return matchRemoteTypes(localSchema, remoteTypes)
 }
 
-func matchRemoteTypes(expandedTypes map[string][]*gqlField, schema *ast.Schema) error {
-	for typeName, fields := range expandedTypes {
-		localType, ok := schema.Types[typeName]
-		if !ok {
-			return errors.Errorf(
-				"Unable to find remote type %s in the local schema",
-				typeName,
-			)
-		}
-		for _, field := range fields {
-			localField := localType.Fields.ForName(field.Name)
-			if localField == nil {
-				return errors.Errorf(
-					"%s field for the remote type %s is not present in the local type %s",
-					field.Name, localType.Name, localType.Name,
-				)
-			}
-			if localField.Type.String() != field.Type.String() {
-				return errors.Errorf(
-					"expected type for the field %s is %s but got %s in type %s",
-					field.Name,
-					field.Type.String(),
-					localField.Type.String(),
-					typeName,
-				)
+func matchRemoteTypes(schema *ast.Schema, remoteTypes map[string]*types) error {
+	for typeName, def := range schema.Types {
+		origTyp := schema.Types[typeName]
+		remoteDir := origTyp.Directives.ForName(remoteDirective)
+		if remoteDir != nil {
+			{
+				remoteType, ok := remoteTypes[def.Name]
+				fields := def.Fields
+				if !ok {
+					return errors.Errorf(
+						"Unable to find local type %s in the remote schema",
+						typeName,
+					)
+				}
+				remoteFields := remoteType.Fields
+				if remoteFields == nil {
+					// Get fields for INPUT_OBJECT
+					remoteFields = remoteType.InputFields
+				}
+				for _, field := range fields {
+					var remoteField *gqlField = nil
+					for _, rf := range remoteFields {
+						if rf.Name == field.Name {
+							remoteField = rf
+						}
+					}
+					if remoteField == nil {
+						return errors.Errorf(
+							"%s field for the local type %s is not present in the remote type %s",
+							field.Name, typeName, remoteType.Name,
+						)
+					}
+					if remoteField.Type.String() != field.Type.String() {
+						return errors.Errorf(
+							"expected type for the field %s is %s but got %s in type %s",
+							remoteField.Name,
+							remoteField.Type.String(),
+							field.Type.String(),
+							typeName,
+						)
+					}
+				}
 			}
 		}
 	}

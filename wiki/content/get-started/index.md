@@ -30,7 +30,7 @@ You need at least one Dgraph Zero and one Dgraph Alpha to get started.
 **Here's a four-step tutorial to get you up and running.**
 
 This is a quick-start guide to running Dgraph.
-For an interactive walkthrough, take the [tour](https://tour.dgraph.io).
+For an interactive walkthrough, take the [tour](https://dgraph.io/tour/).
 
 {{% notice "tip" %}}
 This guide is for the powerful query language of Dgraph, [GraphQL+-](https://dgraph.io/docs/master/query-language/#graphql)
@@ -53,7 +53,7 @@ _This standalone image is meant for quickstart purposes only.
 It is not recommended for production environments._
 
 ```sh
-docker run --rm -it -p 8080:8080 -p 9080:9080 -p 8000:8000 -v ~/dgraph:/dgraph dgraph/standalone:v20.03.0
+docker run --rm -it -p 8080:8080 -p 9080:9080 -p 8000:8000 -v ~/dgraph:/dgraph dgraph/standalone:{{< version >}}
 ```
 
 This would start a single container with **Dgraph Alpha**, **Dgraph Zero** and **Ratel** running in it.
@@ -288,7 +288,7 @@ data, set a schema and queried that data back.
 
 - Go to [Clients]({{< relref "clients/index.md" >}}) to see how to
 communicate with Dgraph from your application.
-- Take the [Tour](https://tour.dgraph.io) for a guided tour of how to write queries in Dgraph.
+- Take the [Tour](https://dgraph.io/tour/) for a guided tour of how to write queries in Dgraph.
 - A wider range of queries can also be found in the
 [Query Language]({{< relref "query-language/index.md" >}}) reference.
 - See [Deploy]({{< relref "deploy/index.md" >}}) if you wish to run Dgraph
@@ -300,4 +300,3 @@ communicate with Dgraph from your application.
 feature requests and discussions.
 * Please use [Github Issues](https://github.com/dgraph-io/dgraph/issues)
 if you encounter bugs or have feature requests.
-* You can also join our [Slack channel](http://slack.dgraph.io).

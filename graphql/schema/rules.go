@@ -18,10 +18,13 @@ package schema
 
 import (
 	"fmt"
+	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 
+	"github.com/dgraph-io/dgraph/x"
 	"github.com/vektah/gqlparser/v2/ast"
 	"github.com/vektah/gqlparser/v2/gqlerror"
 	"github.com/vektah/gqlparser/v2/parser"
@@ -35,9 +38,10 @@ func init() {
 
 	schemaValidations = append(schemaValidations, dgraphDirectivePredicateValidation)
 	typeValidations = append(typeValidations, idCountCheck, dgraphDirectiveTypeValidation,
-		passwordDirectiveValidation)
+		passwordDirectiveValidation, conflictingDirectiveValidation, nonIdFieldsCheck,
+		remoteTypeValidation)
 	fieldValidations = append(fieldValidations, listValidityCheck, fieldArgumentCheck,
-		fieldNameCheck, isValidFieldForList)
+		fieldNameCheck, isValidFieldForList, hasAuthDirective)
 
 	validator.AddRule("Check variable type is correct", variableTypeCheck)
 	validator.AddRule("Check for list type value", listTypeCheck)
@@ -108,6 +112,15 @@ func dgraphDirectivePredicateValidation(gqlSch *ast.Schema, definitions []string
 		}
 	}
 
+	checkConflictingDirectivesOnInterface := func(def *ast.Definition) {
+		for _, directive := range def.Directives {
+			if directive.Name == authDirective {
+				errs = append(errs, gqlerror.ErrorPosf(def.Position,
+					"Interface %s; @auth directive is not allowed on interfaces.", def.Name))
+			}
+		}
+	}
+
 	checkConflictingFieldsInImplementedInterfacesError := func(typ *ast.Definition) {
 		fieldsToReport := make(map[string][]string)
 		interfaces := typ.Interfaces
@@ -154,6 +167,7 @@ func dgraphDirectivePredicateValidation(gqlSch *ast.Schema, definitions []string
 			typName := typeName(def)
 			if def.Kind == ast.Interface {
 				interfacePreds[def.Name] = make(map[string]bool)
+				checkConflictingDirectivesOnInterface(def)
 			} else {
 				checkConflictingFieldsInImplementedInterfacesError(def)
 			}
@@ -372,21 +386,19 @@ func customMutationNameValidation(schema *ast.SchemaDocument) gqlerror.List {
 	return errs
 }
 
-func dataTypeCheck(defn *ast.Definition) *gqlerror.Error {
+func dataTypeCheck(schema *ast.Schema, defn *ast.Definition) gqlerror.List {
 	if defn.Kind == ast.Object || defn.Kind == ast.Enum || defn.Kind == ast.Interface || defn.
 		Kind == ast.InputObject {
 		return nil
 	}
-	return gqlerror.ErrorPosf(
+	return []*gqlerror.Error{gqlerror.ErrorPosf(
 		defn.Position,
 		"You can't add %s definitions. "+
 			"Only type, interface, input and enums are allowed in initial schema.",
-		strings.ToLower(string(defn.Kind)),
-	)
+		strings.ToLower(string(defn.Kind)))}
 }
 
-func nameCheck(defn *ast.Definition) *gqlerror.Error {
-
+func nameCheck(schema *ast.Schema, defn *ast.Definition) gqlerror.List {
 	if (defn.Kind == ast.Object || defn.Kind == ast.Enum) && isReservedKeyWord(defn.Name) {
 		var errMesg string
 
@@ -412,7 +424,7 @@ func nameCheck(defn *ast.Definition) *gqlerror.Error {
 			)
 		}
 
-		return gqlerror.ErrorPosf(defn.Position, errMesg)
+		return []*gqlerror.Error{gqlerror.ErrorPosf(defn.Position, errMesg)}
 	}
 
 	return nil
@@ -437,8 +449,33 @@ func collectFieldNames(idFields []*ast.FieldDefinition) (string, []gqlerror.Loca
 	return fieldNamesString, errLocations
 }
 
-func passwordDirectiveValidation(typ *ast.Definition) *gqlerror.Error {
+func conflictingDirectiveValidation(schema *ast.Schema, typ *ast.Definition) gqlerror.List {
+	var hasAuth, hasRemote, hasSubscription bool
+	for _, dir := range typ.Directives {
+		if dir.Name == authDirective {
+			hasAuth = true
+		}
+		if dir.Name == remoteDirective {
+			hasRemote = true
+		}
+		if dir.Name == SubscriptionDirective {
+			hasSubscription = true
+		}
+	}
+	if hasAuth && hasRemote {
+		return []*gqlerror.Error{gqlerror.ErrorPosf(typ.Position, `Type %s; cannot have both @%s and @%s directive`,
+			typ.Name, authDirective, remoteDirective)}
+	}
+	if hasSubscription && hasRemote {
+		return []*gqlerror.Error{gqlerror.ErrorPosf(typ.Position, `Type %s; cannot have both @%s and @%s directive`,
+			typ.Name, SubscriptionDirective, remoteDirective)}
+	}
+	return nil
+}
+
+func passwordDirectiveValidation(schema *ast.Schema, typ *ast.Definition) gqlerror.List {
 	dirs := make([]string, 0)
+	var errs []*gqlerror.Error
 
 	for _, dir := range typ.Directives {
 		if dir.Name != secretDirective {
@@ -446,16 +483,18 @@ func passwordDirectiveValidation(typ *ast.Definition) *gqlerror.Error {
 		}
 		val := dir.Arguments.ForName("field").Value.Raw
 		if val == "" {
-			return gqlerror.ErrorPosf(typ.Position,
-				`Type %s; Argument "field" of secret directive is empty`, typ.Name)
+			errs = append(errs, gqlerror.ErrorPosf(typ.Position,
+				`Type %s; Argument "field" of secret directive is empty`, typ.Name))
+			return errs
 		}
 		dirs = append(dirs, val)
 	}
 
 	if len(dirs) > 1 {
 		val := strings.Join(dirs, ",")
-		return gqlerror.ErrorPosf(typ.Position,
-			"Type %s; has more than one secret fields %s", typ.Name, val)
+		errs = append(errs, gqlerror.ErrorPosf(typ.Position,
+			"Type %s; has more than one secret fields %s", typ.Name, val))
+		return errs
 	}
 
 	if len(dirs) == 0 {
@@ -465,16 +504,17 @@ func passwordDirectiveValidation(typ *ast.Definition) *gqlerror.Error {
 	val := dirs[0]
 	for _, f := range typ.Fields {
 		if f.Name == val {
-			return gqlerror.ErrorPosf(typ.Position,
+			errs = append(errs, gqlerror.ErrorPosf(typ.Position,
 				"Type %s; has a secret directive and field of the same name %s",
-				typ.Name, val)
+				typ.Name, val))
+			return errs
 		}
 	}
 
 	return nil
 }
 
-func dgraphDirectiveTypeValidation(typ *ast.Definition) *gqlerror.Error {
+func dgraphDirectiveTypeValidation(schema *ast.Schema, typ *ast.Definition) gqlerror.List {
 	dir := typ.Directives.ForName(dgraphDirective)
 	if dir == nil {
 		return nil
@@ -482,19 +522,111 @@ func dgraphDirectiveTypeValidation(typ *ast.Definition) *gqlerror.Error {
 
 	typeArg := dir.Arguments.ForName(dgraphTypeArg)
 	if typeArg == nil || typeArg.Value.Raw == "" {
-		return gqlerror.ErrorPosf(
+		return []*gqlerror.Error{gqlerror.ErrorPosf(
 			dir.Position,
-			"Type %s; type argument for @dgraph directive should not be empty.", typ.Name)
+			"Type %s; type argument for @dgraph directive should not be empty.", typ.Name)}
 	}
 	if typeArg.Value.Kind != ast.StringValue {
-		return gqlerror.ErrorPosf(
+		return []*gqlerror.Error{gqlerror.ErrorPosf(
 			dir.Position,
-			"Type %s; type argument for @dgraph directive should of type String.", typ.Name)
+			"Type %s; type argument for @dgraph directive should of type String.", typ.Name)}
 	}
 	return nil
 }
 
-func idCountCheck(typ *ast.Definition) *gqlerror.Error {
+// A type should have other fields apart from fields of
+// 1. Type ID!
+// 2. Fields with @custom directive.
+// to be a valid type. Otherwise its not possible to add objects of that type.
+func nonIdFieldsCheck(schema *ast.Schema, typ *ast.Definition) gqlerror.List {
+	if isQueryOrMutation(typ.Name) || typ.Kind == ast.Enum || typ.Kind == ast.Interface ||
+		typ.Kind == ast.InputObject {
+		return nil
+	}
+
+	// We don't generate mutations for remote types, so we skip this check for them.
+	remote := typ.Directives.ForName(remoteDirective)
+	if remote != nil {
+		return nil
+	}
+
+	hasNonIdField := false
+	for _, field := range typ.Fields {
+		custom := field.Directives.ForName(customDirective)
+		if isIDField(typ, field) || custom != nil {
+			continue
+		}
+		hasNonIdField = true
+		break
+	}
+
+	if !hasNonIdField {
+		return []*gqlerror.Error{gqlerror.ErrorPosf(typ.Position, "Type %s; is invalid, a type must have atleast "+
+			"one field that is not of ID! type and doesn't have @custom directive.", typ.Name)}
+	}
+	return nil
+}
+
+func remoteTypeValidation(schema *ast.Schema, typ *ast.Definition) gqlerror.List {
+	if isQueryOrMutation(typ.Name) {
+		return nil
+	}
+	remote := typ.Directives.ForName(remoteDirective)
+	if remote == nil {
+		for _, field := range typ.Fields {
+			// If the field is being resolved through a custom directive, then we don't care if
+			// the type for the field is a remote or a non-remote type.
+			custom := field.Directives.ForName(customDirective)
+			if custom != nil {
+				continue
+			}
+			t := field.Type.Name()
+			origTyp := schema.Types[t]
+			remoteDir := origTyp.Directives.ForName(remoteDirective)
+			if remoteDir != nil {
+				return []*gqlerror.Error{gqlerror.ErrorPosf(field.Position, "Type %s; "+
+					"field %s; is of a type that has @remote directive. Those would need to be "+
+					"resolved by a @custom directive.", typ.Name, field.Name)}
+			}
+		}
+
+		for _, implements := range typ.Interfaces {
+			origTyp := schema.Types[implements]
+			remoteDir := origTyp.Directives.ForName(remoteDirective)
+			if remoteDir != nil {
+				return []*gqlerror.Error{gqlerror.ErrorPosf(typ.Position, "Type %s; "+
+					"without @remote directive can't implement an interface %s; with have "+
+					"@remote directive.", typ.Name, implements)}
+			}
+		}
+		return nil
+	}
+
+	// This means that the type was a remote type.
+	for _, field := range typ.Fields {
+		custom := field.Directives.ForName(customDirective)
+		if custom != nil {
+			return []*gqlerror.Error{gqlerror.ErrorPosf(field.Position, "Type %s; "+
+				"field %s; can't have @custom directive as a @remote type can't have fields with"+
+				" @custom directive.", typ.Name, field.Name)}
+		}
+
+	}
+
+	for _, implements := range typ.Interfaces {
+		origTyp := schema.Types[implements]
+		remoteDir := origTyp.Directives.ForName(remoteDirective)
+		if remoteDir == nil {
+			return []*gqlerror.Error{gqlerror.ErrorPosf(typ.Position, "Type %s; "+
+				"with @remote directive implements interface %s; which doesn't have @remote "+
+				"directive.", typ.Name, implements)}
+		}
+	}
+
+	return nil
+}
+
+func idCountCheck(schema *ast.Schema, typ *ast.Definition) gqlerror.List {
 	var idFields []*ast.FieldDefinition
 	var idDirectiveFields []*ast.FieldDefinition
 	for _, field := range typ.Fields {
@@ -506,6 +638,7 @@ func idCountCheck(typ *ast.Definition) *gqlerror.Error {
 		}
 	}
 
+	var errs []*gqlerror.Error
 	if len(idFields) > 1 {
 		fieldNamesString, errLocations := collectFieldNames(idFields)
 		errMessage := fmt.Sprintf(
@@ -515,10 +648,10 @@ func idCountCheck(typ *ast.Definition) *gqlerror.Error {
 			fieldNamesString, typ.Name, typ.Name,
 		)
 
-		return &gqlerror.Error{
+		errs = append(errs, &gqlerror.Error{
 			Message:   errMessage,
 			Locations: errLocations,
-		}
+		})
 	}
 
 	if len(idDirectiveFields) > 1 {
@@ -530,16 +663,28 @@ func idCountCheck(typ *ast.Definition) *gqlerror.Error {
 			typ.Name, fieldNamesString, typ.Name,
 		)
 
-		return &gqlerror.Error{
+		errs = append(errs, &gqlerror.Error{
 			Message:   errMessage,
 			Locations: errLocations,
-		}
+		})
 	}
 
+	return errs
+}
+
+func hasAuthDirective(typ *ast.Definition, field *ast.FieldDefinition) gqlerror.List {
+	for _, directive := range field.Directives {
+		if directive.Name != authDirective {
+			continue
+		}
+		return []*gqlerror.Error{gqlerror.ErrorPosf(field.Position,
+			"Type %s; Field %s: @%s directive is not allowed on fields",
+			typ.Name, field.Name, authDirective)}
+	}
 	return nil
 }
 
-func isValidFieldForList(typ *ast.Definition, field *ast.FieldDefinition) *gqlerror.Error {
+func isValidFieldForList(typ *ast.Definition, field *ast.FieldDefinition) gqlerror.List {
 	if field.Type.Elem == nil && field.Type.NamedType != "" {
 		return nil
 	}
@@ -550,90 +695,103 @@ func isValidFieldForList(typ *ast.Definition, field *ast.FieldDefinition) *gqler
 	case
 		"ID",
 		"Boolean":
-		return gqlerror.ErrorPosf(
+		return []*gqlerror.Error{gqlerror.ErrorPosf(
 			field.Position, "Type %s; Field %s: %s lists are invalid.",
-			typ.Name, field.Name, field.Type.Elem.Name())
+			typ.Name, field.Name, field.Type.Elem.Name())}
 	}
 	return nil
 }
 
-func fieldArgumentCheck(typ *ast.Definition, field *ast.FieldDefinition) *gqlerror.Error {
+func fieldArgumentCheck(typ *ast.Definition, field *ast.FieldDefinition) gqlerror.List {
 	if isQueryOrMutationType(typ) {
 		return nil
 	}
-	if field.Arguments != nil {
-		return gqlerror.ErrorPosf(
-			field.Position,
-			"Type %s; Field %s: You can't give arguments to fields.",
-			typ.Name, field.Name,
-		)
+
+	// We don't need to verify the argument names for fields which are part of a remote type as
+	// we don't add any of our own arguments to them.
+	remote := typ.Directives.ForName(remoteDirective)
+	if remote != nil {
+		return nil
+	}
+	for _, arg := range field.Arguments {
+		if isReservedArgument(arg.Name) {
+			return []*gqlerror.Error{gqlerror.ErrorPosf(field.Position, "Type %s; Field %s:"+
+				" can't have %s as an argument because it is a reserved argument.",
+				typ.Name, field.Name, arg.Name)}
+		}
 	}
 	return nil
 }
 
-func fieldNameCheck(typ *ast.Definition, field *ast.FieldDefinition) *gqlerror.Error {
+func fieldNameCheck(typ *ast.Definition, field *ast.FieldDefinition) gqlerror.List {
 	// field name cannot be a reserved word
 	if isReservedKeyWord(field.Name) {
-		return gqlerror.ErrorPosf(
+		return []*gqlerror.Error{gqlerror.ErrorPosf(
 			field.Position, "Type %s; Field %s: %s is a reserved keyword and "+
 				"you cannot declare a field with this name.",
-			typ.Name, field.Name, field.Name)
+			typ.Name, field.Name, field.Name)}
 	}
 
 	return nil
 }
 
-func listValidityCheck(typ *ast.Definition, field *ast.FieldDefinition) *gqlerror.Error {
+func listValidityCheck(typ *ast.Definition, field *ast.FieldDefinition) gqlerror.List {
 	if field.Type.Elem == nil && field.Type.NamedType != "" {
 		return nil
 	}
 
 	// Nested lists are not allowed.
 	if field.Type.Elem.Elem != nil {
-		return gqlerror.ErrorPosf(field.Position,
+		return []*gqlerror.Error{gqlerror.ErrorPosf(field.Position,
 			"Type %s; Field %s: Nested lists are invalid.",
-			typ.Name, field.Name)
+			typ.Name, field.Name)}
 	}
 
 	return nil
 }
 
 func hasInverseValidation(sch *ast.Schema, typ *ast.Definition,
-	field *ast.FieldDefinition, dir *ast.Directive) *gqlerror.Error {
+	field *ast.FieldDefinition, dir *ast.Directive,
+	secrets map[string]x.SensitiveByteSlice) gqlerror.List {
+	var errs []*gqlerror.Error
 
 	invTypeName := field.Type.Name()
 	if sch.Types[invTypeName].Kind != ast.Object && sch.Types[invTypeName].Kind != ast.Interface {
-		return gqlerror.ErrorPosf(
-			field.Position,
-			"Type %s; Field %s: Field %[2]s is of type %s, but @hasInverse directive only applies"+
-				" to fields with object types.", typ.Name, field.Name, invTypeName,
-		)
+		errs = append(errs,
+			gqlerror.ErrorPosf(
+				field.Position,
+				"Type %s; Field %s: Field %[2]s is of type %s, but @hasInverse directive only applies"+
+					" to fields with object types.", typ.Name, field.Name, invTypeName))
+		return errs
 	}
 
 	invFieldArg := dir.Arguments.ForName("field")
 	if invFieldArg == nil {
 		// This check can be removed once gqlparser bug
 		// #107(https://github.com/vektah/gqlparser/issues/107) is fixed.
-		return gqlerror.ErrorPosf(
-			dir.Position,
-			"Type %s; Field %s: @hasInverse directive doesn't have field argument.",
-			typ.Name, field.Name,
-		)
+		errs = append(errs,
+			gqlerror.ErrorPosf(
+				dir.Position,
+				"Type %s; Field %s: @hasInverse directive doesn't have field argument.",
+				typ.Name, field.Name))
+		return errs
 	}
 
 	invFieldName := invFieldArg.Value.Raw
 	invType := sch.Types[invTypeName]
 	invField := invType.Fields.ForName(invFieldName)
 	if invField == nil {
-		return gqlerror.ErrorPosf(
-			dir.Position,
-			"Type %s; Field %s: inverse field %s doesn't exist for type %s.",
-			typ.Name, field.Name, invFieldName, invTypeName,
-		)
+		errs = append(errs,
+			gqlerror.ErrorPosf(
+				dir.Position,
+				"Type %s; Field %s: inverse field %s doesn't exist for type %s.",
+				typ.Name, field.Name, invFieldName, invTypeName))
+		return errs
 	}
 
 	if errMsg := isInverse(sch, typ.Name, field.Name, invTypeName, invField); errMsg != "" {
-		return gqlerror.ErrorPosf(dir.Position, errMsg)
+		errs = append(errs, gqlerror.ErrorPosf(dir.Position, errMsg))
+		return errs
 	}
 
 	invDirective := invField.Directives.ForName(inverseDirective)
@@ -770,7 +928,9 @@ func searchValidation(
 	sch *ast.Schema,
 	typ *ast.Definition,
 	field *ast.FieldDefinition,
-	dir *ast.Directive) *gqlerror.Error {
+	dir *ast.Directive,
+	secrets map[string]x.SensitiveByteSlice) gqlerror.List {
+	var errs []*gqlerror.Error
 
 	arg := dir.Arguments.ForName(searchArgs)
 	if arg == nil {
@@ -782,27 +942,30 @@ func searchValidation(
 			return nil
 		}
 
-		return gqlerror.ErrorPosf(
+		errs = append(errs, gqlerror.ErrorPosf(
 			dir.Position,
 			"Type %s; Field %s: has the @search directive but fields of type %s "+
 				"can't have the @search directive.",
-			typ.Name, field.Name, field.Type.Name())
+			typ.Name, field.Name, field.Type.Name()))
+		return errs
 	}
 
 	// This check can be removed once gqlparser bug
 	// #107(https://github.com/vektah/gqlparser/issues/107) is fixed.
 	if arg.Value.Kind != ast.ListValue {
-		return gqlerror.ErrorPosf(
+		errs = append(errs, gqlerror.ErrorPosf(
 			dir.Position,
 			"Type %s; Field %s: the @search directive requires a list argument, like @search(by: [hash])",
-			typ.Name, field.Name)
+			typ.Name, field.Name))
+		return errs
 	}
 
 	searchArgs := getSearchArgs(field)
 	searchIndexes := make(map[string]string)
 	for _, searchArg := range searchArgs {
 		if err := validateSearchArg(searchArg, sch, typ, field, dir); err != nil {
-			return err
+			errs = append(errs, err)
+			return errs
 		}
 
 		// Checks that the filter indexes aren't repeated and they
@@ -810,61 +973,66 @@ func searchValidation(
 		searchIndex := builtInFilters[searchArg]
 		if val, ok := searchIndexes[searchIndex]; ok {
 			if field.Type.Name() == "String" || sch.Types[field.Type.Name()].Kind == ast.Enum {
-				return gqlerror.ErrorPosf(
+				errs = append(errs, gqlerror.ErrorPosf(
 					dir.Position,
 					"Type %s; Field %s: the argument to @search '%s' is the same "+
 						"as the index '%s' provided before and shouldn't "+
 						"be used together",
-					typ.Name, field.Name, searchArg, val)
+					typ.Name, field.Name, searchArg, val))
+				return errs
 			}
 
-			return gqlerror.ErrorPosf(
+			errs = append(errs, gqlerror.ErrorPosf(
 				dir.Position,
 				"Type %s; Field %s: has the search directive on %s. %s "+
 					"allows only one argument for @search.",
-				typ.Name, field.Name, field.Type.Name(), field.Type.Name())
+				typ.Name, field.Name, field.Type.Name(), field.Type.Name()))
+			return errs
 		}
 
 		for _, index := range filtersCollisions[searchIndex] {
 			if val, ok := searchIndexes[index]; ok {
-				return gqlerror.ErrorPosf(
+				errs = append(errs, gqlerror.ErrorPosf(
 					dir.Position,
 					"Type %s; Field %s: the arguments '%s' and '%s' can't "+
 						"be used together as arguments to @search.",
-					typ.Name, field.Name, searchArg, val)
+					typ.Name, field.Name, searchArg, val))
+				return errs
 			}
 		}
 
 		searchIndexes[searchIndex] = searchArg
 	}
 
-	return nil
+	return errs
 }
 
 func dgraphDirectiveValidation(sch *ast.Schema, typ *ast.Definition, field *ast.FieldDefinition,
-	dir *ast.Directive) *gqlerror.Error {
+	dir *ast.Directive, secrets map[string]x.SensitiveByteSlice) gqlerror.List {
+	var errs []*gqlerror.Error
 
 	if isID(field) {
-		return gqlerror.ErrorPosf(
+		errs = append(errs, gqlerror.ErrorPosf(
 			dir.Position,
 			"Type %s; Field %s: has the @dgraph directive but fields of type ID "+
-				"can't have the @dgraph directive.", typ.Name, field.Name)
+				"can't have the @dgraph directive.", typ.Name, field.Name))
+		return errs
 	}
 
 	predArg := dir.Arguments.ForName(dgraphPredArg)
 	if predArg == nil || predArg.Value.Raw == "" {
-		return gqlerror.ErrorPosf(
+		errs = append(errs, gqlerror.ErrorPosf(
 			dir.Position,
 			"Type %s; Field %s: pred argument for @dgraph directive should not be empty.",
-			typ.Name, field.Name,
-		)
+			typ.Name, field.Name))
+		return errs
 	}
 	if predArg.Value.Kind != ast.StringValue {
-		return gqlerror.ErrorPosf(
+		errs = append(errs, gqlerror.ErrorPosf(
 			dir.Position,
 			"Type %s; Field %s: pred argument for @dgraph directive should of type String.",
-			typ.Name, field.Name,
-		)
+			typ.Name, field.Name))
+		return errs
 	}
 	if strings.HasPrefix(predArg.Value.Raw, "~") || strings.HasPrefix(predArg.Value.Raw, "<~") {
 		if sch.Types[typ.Name].Kind == ast.Interface {
@@ -876,29 +1044,31 @@ func dgraphDirectiveValidation(sch *ast.Schema, typ *ast.Definition, field *ast.
 		// starts with ~ we already know this field has to be a reverse edge of some other field.
 		invDirective := field.Directives.ForName(inverseDirective)
 		if invDirective != nil {
-			return gqlerror.ErrorPosf(
+			errs = append(errs, gqlerror.ErrorPosf(
 				dir.Position,
 				"Type %s; Field %s: @hasInverse directive is not allowed when pred argument in "+
 					"@dgraph directive starts with a ~.",
-				typ.Name, field.Name,
-			)
+				typ.Name, field.Name))
+			return errs
 		}
 
 		forwardEdgePred := strings.Trim(predArg.Value.Raw, "<~>")
 		invTypeName := field.Type.Name()
 		if sch.Types[invTypeName].Kind != ast.Object &&
 			sch.Types[invTypeName].Kind != ast.Interface {
-			return gqlerror.ErrorPosf(
+			errs = append(errs, gqlerror.ErrorPosf(
 				field.Position,
 				"Type %s; Field %s is of type %s, but reverse predicate in @dgraph"+
 					" directive only applies to fields with object types.", typ.Name, field.Name,
-				invTypeName)
+				invTypeName))
+			return errs
 		}
 
 		if field.Type.NamedType != "" {
-			return gqlerror.ErrorPosf(dir.Position,
+			errs = append(errs, gqlerror.ErrorPosf(dir.Position,
 				"Type %s; Field %s: with a dgraph directive that starts with ~ should be of type "+
-					"list.", typ.Name, field.Name)
+					"list.", typ.Name, field.Name))
+			return errs
 		}
 
 		invType := sch.Types[invTypeName]
@@ -916,29 +1086,30 @@ func dgraphDirectiveValidation(sch *ast.Schema, typ *ast.Definition, field *ast.
 			}
 			if predArg.Value.Raw == forwardEdgePred {
 				if fld.Type.Name() != typ.Name {
-					return gqlerror.ErrorPosf(dir.Position, "Type %s; Field %s: should be of"+
+					errs = append(errs, gqlerror.ErrorPosf(dir.Position, "Type %s; Field %s: should be of"+
 						" type %s to be compatible with @dgraph reverse directive but is of"+
-						" type %s.", invTypeName, fld.Name, typ.Name, fld.Type.Name())
+						" type %s.", invTypeName, fld.Name, typ.Name, fld.Type.Name()))
+					return errs
 				}
 				invDirective := fld.Directives.ForName(inverseDirective)
 				if invDirective != nil {
-					return gqlerror.ErrorPosf(
+					errs = append(errs, gqlerror.ErrorPosf(
 						dir.Position,
 						"Type %s; Field %s: @hasInverse directive is not allowed is not allowed "+
 							"because field is forward edge of another field with reverse directive.",
-						invType.Name, fld.Name,
-					)
+						invType.Name, fld.Name))
+					return errs
 				}
 				forwardFound = true
 				break
 			}
 		}
 		if !forwardFound {
-			return gqlerror.ErrorPosf(
+			errs = append(errs, gqlerror.ErrorPosf(
 				dir.Position,
 				"Type %s; Field %s: pred argument: %s is not supported as forward edge doesn't "+
-					"exist for type %s.", typ.Name, field.Name, predArg.Value.Raw, invTypeName,
-			)
+					"exist for type %s.", typ.Name, field.Name, predArg.Value.Raw, invTypeName))
+			return errs
 		}
 	}
 	return nil
@@ -947,40 +1118,34 @@ func dgraphDirectiveValidation(sch *ast.Schema, typ *ast.Definition, field *ast.
 func passwordValidation(sch *ast.Schema,
 	typ *ast.Definition,
 	field *ast.FieldDefinition,
-	dir *ast.Directive) *gqlerror.Error {
+	dir *ast.Directive,
+	secrets map[string]x.SensitiveByteSlice) gqlerror.List {
 
-	return passwordDirectiveValidation(typ)
-}
-
-func remoteDirectiveValidation(sch *ast.Schema,
-	typ *ast.Definition,
-	field *ast.FieldDefinition,
-	dir *ast.Directive) *gqlerror.Error {
-	return nil
+	return passwordDirectiveValidation(sch, typ)
 }
 
 func customDirectiveValidation(sch *ast.Schema,
 	typ *ast.Definition,
 	field *ast.FieldDefinition,
-	dir *ast.Directive) *gqlerror.Error {
+	dir *ast.Directive,
+	secrets map[string]x.SensitiveByteSlice) gqlerror.List {
+	var errs []*gqlerror.Error
 
 	// 1. Validating custom directive itself
 	search := field.Directives.ForName(searchDirective)
 	if search != nil {
-		return gqlerror.ErrorPosf(
+		errs = append(errs, gqlerror.ErrorPosf(
 			dir.Position,
 			"Type %s; Field %s; custom directive not allowed along with @search directive.",
-			typ.Name, field.Name,
-		)
+			typ.Name, field.Name))
 	}
 
 	dgraph := field.Directives.ForName(dgraphDirective)
 	if dgraph != nil {
-		return gqlerror.ErrorPosf(
+		errs = append(errs, gqlerror.ErrorPosf(
 			dir.Position,
 			"Type %s; Field %s; custom directive not allowed along with @dgraph directive.",
-			typ.Name, field.Name,
-		)
+			typ.Name, field.Name))
 	}
 
 	defn := sch.Types[typ.Name]
@@ -988,41 +1153,38 @@ func customDirectiveValidation(sch *ast.Schema,
 	xid := getXIDField(defn)
 	if !isQueryOrMutationType(typ) {
 		if len(id) == 0 && len(xid) == 0 {
-			return gqlerror.ErrorPosf(
+			errs = append(errs, gqlerror.ErrorPosf(
 				dir.Position,
 				"Type %s; Field %s; @custom directive is only allowed on fields where the type"+
 					" definition has a field with type ID! or a field with @id directive.",
-				typ.Name, field.Name,
-			)
+				typ.Name, field.Name))
 		}
 	}
 
 	// 2. Validating arguments to custom directive
 	l := len(dir.Arguments)
 	if l == 0 || l > 1 {
-		return gqlerror.ErrorPosf(
+		errs = append(errs, gqlerror.ErrorPosf(
 			dir.Position,
 			"Type %s; Field %s: has %d arguments for @custom directive, "+
 				"it should contain exactly 1 argument.",
-			typ.Name, field.Name, l,
-		)
+			typ.Name, field.Name, l))
 	}
 
 	// 3. Validating http argument
 	httpArg := dir.Arguments.ForName("http")
 	if httpArg == nil || httpArg.Value.String() == "" {
-		return gqlerror.ErrorPosf(
+		errs = append(errs, gqlerror.ErrorPosf(
 			dir.Position,
 			"Type %s; Field %s: http argument for @custom directive should not be empty.",
-			typ.Name, field.Name,
-		)
+			typ.Name, field.Name))
+		return errs
 	}
 	if httpArg.Value.Kind != ast.ObjectValue {
-		return gqlerror.ErrorPosf(
+		errs = append(errs, gqlerror.ErrorPosf(
 			httpArg.Position,
 			"Type %s; Field %s: http argument for @custom directive should be of type Object.",
-			typ.Name, field.Name,
-		)
+			typ.Name, field.Name))
 	}
 
 	// Start validating children of http argument
@@ -1030,17 +1192,19 @@ func customDirectiveValidation(sch *ast.Schema,
 	// 4. Validating url
 	httpUrl := httpArg.Value.Children.ForName("url")
 	if httpUrl == nil {
-		return gqlerror.ErrorPosf(
+		errs = append(errs, gqlerror.ErrorPosf(
 			dir.Position,
 			"Type %s; Field %s; url field inside @custom directive is mandatory.", typ.Name,
-			field.Name)
+			field.Name))
+		return errs
 	}
 	parsedURL, err := url.ParseRequestURI(httpUrl.Raw)
 	if err != nil {
-		return gqlerror.ErrorPosf(
+		errs = append(errs, gqlerror.ErrorPosf(
 			httpUrl.Position,
 			"Type %s; Field %s; url field inside @custom directive is invalid.", typ.Name,
-			field.Name)
+			field.Name))
+		return errs
 	}
 
 	// collect all the url variables
@@ -1071,30 +1235,32 @@ func customDirectiveValidation(sch *ast.Schema,
 			// check that they should be a valid field in the type definition.
 			fd := defn.Fields.ForName(v.varName)
 			if fd == nil {
-				return gqlerror.ErrorPosf(
+				errs = append(errs, gqlerror.ErrorPosf(
 					httpUrl.Position,
 					"Type %s; Field %s; url %s inside @custom directive uses a field %s that is "+
-						"not defined.", typ.Name, field.Name, v.location, v.varName)
+						"not defined.", typ.Name, field.Name, v.location, v.varName))
+				continue
 			}
 			if v.location == "path" && !fd.Type.NonNull {
-				return gqlerror.ErrorPosf(
+				errs = append(errs, gqlerror.ErrorPosf(
 					httpUrl.Position,
 					"Type %s; Field %s; url %s inside @custom directive uses a field %s that "+
-						"can be null.", typ.Name, field.Name, v.location, v.varName)
+						"can be null.", typ.Name, field.Name, v.location, v.varName))
 			}
 		} else {
 			arg := field.Arguments.ForName(v.varName)
 			if arg == nil {
-				return gqlerror.ErrorPosf(
+				errs = append(errs, gqlerror.ErrorPosf(
 					httpUrl.Position,
 					"Type %s; Field %s; url %s inside @custom directive uses an argument %s that "+
-						"is not defined.", typ.Name, field.Name, v.location, v.varName)
+						"is not defined.", typ.Name, field.Name, v.location, v.varName))
+				continue
 			}
 			if v.location == "path" && !arg.Type.NonNull {
-				return gqlerror.ErrorPosf(
+				errs = append(errs, gqlerror.ErrorPosf(
 					httpUrl.Position,
 					"Type %s; Field %s; url %s inside @custom directive uses an argument %s"+
-						" that can be null.", typ.Name, field.Name, v.location, v.varName)
+						" that can be null.", typ.Name, field.Name, v.location, v.varName))
 			}
 		}
 	}
@@ -1102,46 +1268,45 @@ func customDirectiveValidation(sch *ast.Schema,
 	// 5. Validating method
 	method := httpArg.Value.Children.ForName("method")
 	if method == nil {
-		return gqlerror.ErrorPosf(
+		errs = append(errs, gqlerror.ErrorPosf(
 			dir.Position,
 			"Type %s; Field %s; method field inside @custom directive is mandatory.", typ.Name,
-			field.Name)
-	}
-	if !(method.Raw == "GET" || method.Raw == "POST" || method.Raw == "PUT" || method.
+			field.Name))
+	} else if !(method.Raw == "GET" || method.Raw == "POST" || method.Raw == "PUT" || method.
 		Raw == "PATCH" || method.Raw == "DELETE") {
-		return gqlerror.ErrorPosf(
+		errs = append(errs, gqlerror.ErrorPosf(
 			method.Position,
 			"Type %s; Field %s; method field inside @custom directive can only be GET/POST/PUT"+
 				"/PATCH/DELETE.",
-			typ.Name, field.Name)
+			typ.Name, field.Name))
 	}
 
-	// 6. Validating operation
-	operation := httpArg.Value.Children.ForName("operation")
-	var isBatchOperation bool
-	if operation != nil {
+	// 6. Validating mode
+	mode := httpArg.Value.Children.ForName(mode)
+	var isBatchMode bool
+	if mode != nil {
 		if isQueryOrMutationType(typ) {
-			return gqlerror.ErrorPosf(
-				operation.Position,
-				"Type %s; Field %s; operation field inside @custom directive can't be "+
-					"present on Query/Mutation.", typ.Name, field.Name)
+			errs = append(errs, gqlerror.ErrorPosf(
+				mode.Position,
+				"Type %s; Field %s; mode field inside @custom directive can't be "+
+					"present on Query/Mutation.", typ.Name, field.Name))
 		}
 
-		op := operation.Raw
-		if op != "single" && op != "batch" {
-			return gqlerror.ErrorPosf(
-				operation.Position,
-				"Type %s; Field %s; operation field inside @custom directive can only be "+
-					"single/batch.", typ.Name, field.Name)
+		op := mode.Raw
+		if op != SINGLE && op != BATCH {
+			errs = append(errs, gqlerror.ErrorPosf(
+				mode.Position,
+				"Type %s; Field %s; mode field inside @custom directive can only be "+
+					"SINGLE/BATCH.", typ.Name, field.Name))
 		}
 
-		isBatchOperation = op == "batch"
-		if isBatchOperation && urlHasParams {
-			return gqlerror.ErrorPosf(
+		isBatchMode = op == BATCH
+		if isBatchMode && urlHasParams {
+			errs = append(errs, gqlerror.ErrorPosf(
 				httpUrl.Position,
 				"Type %s; Field %s; has parameters in url inside @custom directive while"+
-					" operation is batch, url can't contain parameters if operation is batch.",
-				typ.Name, field.Name)
+					" mode is BATCH, url can't contain parameters if mode is BATCH.",
+				typ.Name, field.Name))
 		}
 	}
 
@@ -1150,22 +1315,31 @@ func customDirectiveValidation(sch *ast.Schema,
 	graphql := httpArg.Value.Children.ForName("graphql")
 	if graphql != nil {
 		if urlHasParams {
-			return gqlerror.ErrorPosf(dir.Position,
+			errs = append(errs, gqlerror.ErrorPosf(dir.Position,
 				"Type %s; Field %s; has parameters in url along with graphql field inside"+
 					" @custom directive, url can't contain parameters if graphql field is present.",
-				typ.Name, field.Name)
+				typ.Name, field.Name))
 		}
 		if method.Raw != "POST" {
-			return gqlerror.ErrorPosf(dir.Position,
+			errs = append(errs, gqlerror.ErrorPosf(dir.Position,
 				"Type %s; Field %s; has method %s while graphql field is also present inside"+
 					" @custom directive, method can only be POST if graphql field is present.",
-				typ.Name, field.Name, method.Raw)
+				typ.Name, field.Name, method.Raw))
 		}
-		if body != nil {
-			return gqlerror.ErrorPosf(dir.Position,
-				"Type %s; Field %s; has both body and graphql field inside @custom directive, "+
-					"they can't be present together.",
-				typ.Name, field.Name)
+		if !isBatchMode {
+			if body != nil {
+				errs = append(errs, gqlerror.ErrorPosf(dir.Position,
+					"Type %s; Field %s; has both body and graphql field inside @custom directive, "+
+						"they can't be present together.",
+					typ.Name, field.Name))
+			}
+		} else {
+			if body == nil {
+				errs = append(errs, gqlerror.ErrorPosf(dir.Position,
+					"Type %s; Field %s; both body and graphql field inside @custom directive "+
+						"are required if mode is BATCH.",
+					typ.Name, field.Name))
+			}
 		}
 	}
 
@@ -1174,9 +1348,9 @@ func customDirectiveValidation(sch *ast.Schema,
 	if body != nil {
 		_, requiredFields, err = parseBodyTemplate(body.Raw)
 		if err != nil {
-			return gqlerror.ErrorPosf(body.Position,
+			errs = append(errs, gqlerror.ErrorPosf(body.Position,
 				"Type %s; Field %s; body template inside @custom directive could not be parsed.",
-				typ.Name, field.Name)
+				typ.Name, field.Name))
 		}
 		// Validating params to body template for Query/Mutation types. For other types the
 		// validation is performed later along with graphql.
@@ -1184,9 +1358,9 @@ func customDirectiveValidation(sch *ast.Schema,
 			for fname := range requiredFields {
 				fd := field.Arguments.ForName(fname)
 				if fd == nil {
-					return gqlerror.ErrorPosf(body.Position,
+					errs = append(errs, gqlerror.ErrorPosf(body.Position,
 						"Type %s; Field %s; body template inside @custom directive uses an"+
-							" argument %s that is not defined.", typ.Name, field.Name, fname)
+							" argument %s that is not defined.", typ.Name, field.Name, fname))
 				}
 			}
 		}
@@ -1208,87 +1382,101 @@ func customDirectiveValidation(sch *ast.Schema,
 		// Once that is closed, we should be able to do this.
 		queryDoc, gqlErr := parser.ParseQuery(&ast.Source{Input: graphql.Raw})
 		if gqlErr != nil {
-			return gqlerror.ErrorPosf(graphql.Position,
+			errs = append(errs, gqlerror.ErrorPosf(graphql.Position,
 				"Type %s; Field %s: unable to parse graphql in @custom directive because: %s",
-				typ.Name, field.Name, gqlErr.Message)
+				typ.Name, field.Name, gqlErr.Message))
+			return errs
 		}
 		opCount := len(queryDoc.Operations)
 		if opCount == 0 || opCount > 1 {
-			return gqlerror.ErrorPosf(graphql.Position,
+			errs = append(errs, gqlerror.ErrorPosf(graphql.Position,
 				"Type %s; Field %s: inside graphql in @custom directive, found %d operations, "+
-					"it can have exactly one operation.", typ.Name, field.Name, opCount)
+					"it can have exactly one operation.", typ.Name, field.Name, opCount))
+			return errs
 		}
 		graphqlOpDef = queryDoc.Operations[0]
 		if graphqlOpDef.Operation != "query" && graphqlOpDef.Operation != "mutation" {
-			return gqlerror.ErrorPosf(graphql.Position,
+			errs = append(errs, gqlerror.ErrorPosf(graphql.Position,
 				"Type %s; Field %s: inside graphql in @custom directive, found `%s` operation, "+
 					"it can only have query/mutation.", typ.Name, field.Name,
-				graphqlOpDef.Operation)
+				graphqlOpDef.Operation))
 		}
 		if graphqlOpDef.Name != "" {
-			return gqlerror.ErrorPosf(graphql.Position,
+			errs = append(errs, gqlerror.ErrorPosf(graphql.Position,
 				"Type %s; Field %s: inside graphql in @custom directive, found operation with "+
-					"name `%s`, it can't have a name.", typ.Name, field.Name, graphqlOpDef.Name)
+					"name `%s`, it can't have a name.", typ.Name, field.Name, graphqlOpDef.Name))
 		}
 		if graphqlOpDef.VariableDefinitions != nil {
-			return gqlerror.ErrorPosf(graphql.Position,
-				"Type %s; Field %s: inside graphql in @custom directive, found operation with "+
-					"variables, it can't have any variable definitions.", typ.Name, field.Name)
+			if isQueryOrMutationType(typ) {
+				for _, vd := range graphqlOpDef.VariableDefinitions {
+					ad := field.Arguments.ForName(vd.Variable)
+					if ad == nil {
+						errs = append(errs, gqlerror.ErrorPosf(graphql.Position,
+							"Type %s; Field %s; @custom directive, graphql variables must use "+
+								"fields defined within the type, found `%s`.", typ.Name,
+							field.Name, vd.Variable))
+					}
+				}
+			} else if !isBatchMode {
+				// For BATCH mode we already verify that body should use fields defined inside the
+				// parent type.
+				requiredFields = make(map[string]bool)
+				for _, vd := range graphqlOpDef.VariableDefinitions {
+					requiredFields[vd.Variable] = true
+				}
+			}
 		}
 		if graphqlOpDef.Directives != nil {
-			return gqlerror.ErrorPosf(graphql.Position,
+			errs = append(errs, gqlerror.ErrorPosf(graphql.Position,
 				"Type %s; Field %s: inside graphql in @custom directive, found operation with "+
-					"directives, it can't have any directives.", typ.Name, field.Name)
+					"directives, it can't have any directives.", typ.Name, field.Name))
 		}
 		opSelSetCount := len(graphqlOpDef.SelectionSet)
 		if opSelSetCount == 0 || opSelSetCount > 1 {
-			return gqlerror.ErrorPosf(graphql.Position,
+			errs = append(errs, gqlerror.ErrorPosf(graphql.Position,
 				"Type %s; Field %s: inside graphql in @custom directive, found %d fields inside "+
 					"operation `%s`, it can have exactly one field.", typ.Name, field.Name,
-				opSelSetCount, graphqlOpDef.Operation)
+				opSelSetCount, graphqlOpDef.Operation))
 		}
 		query := graphqlOpDef.SelectionSet[0].(*ast.Field)
 		if query.Alias != query.Name {
-			return gqlerror.ErrorPosf(graphql.Position,
+			errs = append(errs, gqlerror.ErrorPosf(graphql.Position,
 				"Type %s; Field %s: inside graphql in @custom directive, found %s `%s` with alias"+
 					" `%s`, it can't have any alias.",
-				typ.Name, field.Name, graphqlOpDef.Operation, query.Name, query.Alias)
+				typ.Name, field.Name, graphqlOpDef.Operation, query.Name, query.Alias))
 		}
 		// There can't be any ObjectDefinition as it is a query document; if there were, parser
 		// would have given error. So not checking that query.ObjectDefinition is nil
 		if query.Directives != nil {
-			return gqlerror.ErrorPosf(graphql.Position,
+			errs = append(errs, gqlerror.ErrorPosf(graphql.Position,
 				"Type %s; Field %s: inside graphql in @custom directive, found %s `%s` with "+
 					"directives, it can't have any directives.",
-				typ.Name, field.Name, graphqlOpDef.Operation, query.Name)
+				typ.Name, field.Name, graphqlOpDef.Operation, query.Name))
 		}
 		if len(query.SelectionSet) != 0 {
-			return gqlerror.ErrorPosf(graphql.Position,
+			errs = append(errs, gqlerror.ErrorPosf(graphql.Position,
 				"Type %s; Field %s: inside graphql in @custom directive, found %s `%s` with a "+
 					"selection set, it can't have any selection set.",
-				typ.Name, field.Name, graphqlOpDef.Operation, query.Name)
+				typ.Name, field.Name, graphqlOpDef.Operation, query.Name))
 		}
-		// find required fields for the query from its arguments
+		// Validate that argument values used within remote query are from variable definitions.
 		if len(query.Arguments) > 0 {
-			// validate the specific input requirements for batch mode
-			if isBatchOperation {
-				if len(query.Arguments) != 1 ||
-					query.Arguments[0].Value.Kind != ast.ListValue ||
-					len(query.Arguments[0].Value.Children) != 1 ||
-					query.Arguments[0].Value.Children[0].Value.Kind != ast.ObjectValue {
-					return gqlerror.ErrorPosf(graphql.Position,
-						"Type %s; Field %s: inside graphql in @custom directive, for batch "+
-							"operations, %s `%s` can have only one argument with value formatted "+
-							"as `[{param1: $var1, param2: $var2, ...}]`.",
-						typ.Name, field.Name, graphqlOpDef.Operation, query.Name)
+			// validate the specific input requirements for BATCH mode
+			if isBatchMode {
+				if len(query.Arguments) != 1 || query.Arguments[0].Value.Kind != ast.Variable {
+					errs = append(errs, gqlerror.ErrorPosf(graphql.Position,
+						"Type %s; Field %s: inside graphql in @custom directive, for BATCH "+
+							"mode, %s `%s` can have only one argument whose value should "+
+							"be a variable.",
+						typ.Name, field.Name, graphqlOpDef.Operation, query.Name))
+					return errs
 				}
-				input := query.Arguments[0]
-				_, requiredFields, err = parseBodyTemplate(input.Value.Children[0].Value.String())
-				if err != nil {
-					return gqlerror.ErrorPosf(graphql.Position,
-						"Type %s; Field %s: inside graphql in @custom directive, for batch "+
-							"operation, error in parsing argument `%s` for %s `%s`: %s.", typ.Name,
-						field.Name, input.Name, graphqlOpDef.Operation, query.Name, err.Error())
+				argVal := query.Arguments[0].Value.Raw
+				vd := graphqlOpDef.VariableDefinitions.ForName(argVal)
+				if vd == nil {
+					errs = append(errs, gqlerror.ErrorPosf(graphql.Position,
+						"Type %s; Field %s; @custom directive, graphql must use fields with "+
+							"a variable definition, found `%s`.", typ.Name, field.Name, argVal))
 				}
 			} else {
 				var bodyBuilder strings.Builder
@@ -1304,12 +1492,20 @@ func customDirectiveValidation(sch *ast.Schema,
 					bodyBuilder.WriteString(comma)
 				}
 				bodyBuilder.WriteString("}")
-				_, requiredFields, err = parseBodyTemplate(bodyBuilder.String())
+				_, requiredVars, err := parseBodyTemplate(bodyBuilder.String())
 				if err != nil {
-					return gqlerror.ErrorPosf(graphql.Position,
+					errs = append(errs, gqlerror.ErrorPosf(graphql.Position,
 						"Type %s; Field %s: inside graphql in @custom directive, "+
 							"error in parsing arguments for %s `%s`: %s.", typ.Name, field.Name,
-						graphqlOpDef.Operation, query.Name, err.Error())
+						graphqlOpDef.Operation, query.Name, err.Error()))
+				}
+				for varName := range requiredVars {
+					vd := graphqlOpDef.VariableDefinitions.ForName(varName)
+					if vd == nil {
+						errs = append(errs, gqlerror.ErrorPosf(graphql.Position,
+							"Type %s; Field %s; @custom directive, graphql must use fields with "+
+								"a variable definition, found `%s`.", typ.Name, field.Name, varName))
+					}
 				}
 			}
 		}
@@ -1326,9 +1522,9 @@ func customDirectiveValidation(sch *ast.Schema,
 		}
 
 		if field.Name == idField || field.Name == xidField {
-			return gqlerror.ErrorPosf(dir.Position,
+			errs = append(errs, gqlerror.ErrorPosf(dir.Position,
 				"Type %s; Field %s; custom directive not allowed on field of type ID! or field "+
-					"with @id directive.", typ.Name, field.Name)
+					"with @id directive.", typ.Name, field.Name))
 		}
 
 		// TODO - We also need to have point no. 2 validation for custom queries/mutation.
@@ -1361,31 +1557,32 @@ func customDirectiveValidation(sch *ast.Schema,
 			requiresID := false
 			for fname := range requiredFields {
 				if fname == field.Name {
-					return gqlerror.ErrorPosf(errPos,
+					errs = append(errs, gqlerror.ErrorPosf(errPos,
 						"Type %s; Field %s; @custom directive, %s can't require itself.",
-						typ.Name, field.Name, errIn)
+						typ.Name, field.Name, errIn))
 				}
 
 				fd := typ.Fields.ForName(fname)
 				if fd == nil {
-					return gqlerror.ErrorPosf(errPos,
+					errs = append(errs, gqlerror.ErrorPosf(errPos,
 						"Type %s; Field %s; @custom directive, %s must use fields defined "+
-							"within the type, found `%s`.", typ.Name, field.Name, errIn, fname)
+							"within the type, found `%s`.", typ.Name, field.Name, errIn, fname))
+					continue
 				}
 
 				typName := fd.Type.Name()
 				if !isScalar(typName) {
-					return gqlerror.ErrorPosf(errPos,
+					errs = append(errs, gqlerror.ErrorPosf(errPos,
 						"Type %s; Field %s; @custom directive, %s must use scalar fields, "+
 							"found field `%s` of type `%s`.", typ.Name, field.Name, errIn,
-						fname, typName)
+						fname, typName))
 				}
 
 				if fd.Directives.ForName(customDirective) != nil {
-					return gqlerror.ErrorPosf(errPos,
+					errs = append(errs, gqlerror.ErrorPosf(errPos,
 						"Type %s; Field %s; @custom directive, %s can't use another field with "+
 							"@custom directive, found field `%s` with @custom.", typ.Name,
-						field.Name, errIn, fname)
+						field.Name, errIn, fname))
 				}
 
 				if fname == idField || fname == xidField {
@@ -1393,45 +1590,141 @@ func customDirectiveValidation(sch *ast.Schema,
 				}
 			}
 			if !requiresID {
-				return gqlerror.ErrorPosf(errPos,
+				errs = append(errs, gqlerror.ErrorPosf(errPos,
 					"Type %s; Field %s: @custom directive, %s must use a field with type "+
-						"ID! or a field with @id directive.", typ.Name, field.Name, errIn)
+						"ID! or a field with @id directive.", typ.Name, field.Name, errIn))
 			}
 		}
 	}
 
-	// 11. Finally validate the given graphql operation on remote server, when all locally doable
+	// 12. Finally validate the given graphql operation on remote server, when all locally doable
 	// validations have finished
-	if graphql != nil && graphqlOpDef != nil {
+	var skip bool
+	iHeaders := make(map[string]string)
+	if body != nil || graphql != nil {
+		var errPos *ast.Position
+		switch {
+		case body != nil:
+			errPos = body.Position
+		case graphql != nil:
+			errPos = graphql.Position
+		default:
+			// this case is not possible, as requiredFields will have non-0 length only if there was
+			// some body or graphql. Written only to satisfy logic flow, so that errPos is always
+			// non-nil.
+			errPos = dir.Position
+		}
+		si := httpArg.Value.Children.ForName("skipIntrospection")
+		if si != nil {
+			skip, err = strconv.ParseBool(si.Raw)
+			if err != nil {
+				errs = append(errs, gqlerror.ErrorPosf(errPos,
+					"Type %s; Field %s; skipIntrospection in @custom directive can only be "+
+						"true/false, found: `%s`.",
+					typ.Name, field.Name, si.Raw))
+			}
+		}
+
+		forwardHeaders := httpArg.Value.Children.ForName("forwardHeaders")
+		fHeaders := make(map[string]bool)
+		if forwardHeaders != nil {
+			for _, h := range forwardHeaders.Children {
+				key := strings.Split(h.Value.Raw, ":")
+				if len(key) > 2 {
+					return append(errs, gqlerror.ErrorPosf(errPos,
+						"Type %s; Field %s; forwardHeaders in @custom directive should be of the form 'remote_headername:local_headername' or just 'headername'"+
+							", found: `%s`.",
+						typ.Name, field.Name, h.Value.Raw))
+				}
+				fHeaders[key[0]] = true
+			}
+		}
+
+		secretHeaders := httpArg.Value.Children.ForName("secretHeaders")
+		if secretHeaders != nil {
+			for _, h := range secretHeaders.Children {
+				secretKey := strings.Split(h.Value.Raw, ":")
+				if len(secretKey) > 2 {
+					return append(errs, gqlerror.ErrorPosf(errPos,
+						"Type %s; Field %s; secretHeaders in @custom directive should be of the form 'remote_headername:local_headername' or just 'headername'"+
+							", found: `%s`.",
+						typ.Name, field.Name, h.Value.Raw))
+				}
+				if fHeaders != nil {
+					if fHeaders[secretKey[0]] {
+						return append(errs, gqlerror.ErrorPosf(errPos,
+							"Type %s; Field %s; secretHeaders and forwardHeaders in @custom directive cannot have overlapping headers"+
+								", found: `%s`.",
+							typ.Name, field.Name, h.Value.Raw))
+					}
+				}
+			}
+		}
+
+		introspectionHeaders := httpArg.Value.Children.ForName("introspectionHeaders")
+		if introspectionHeaders != nil {
+			for _, h := range introspectionHeaders.Children {
+				key := strings.Split(h.Value.Raw, ":")
+				if len(key) == 1 {
+					key = []string{h.Value.Raw, h.Value.Raw}
+				}
+				if len(key) > 2 {
+					return append(errs, gqlerror.ErrorPosf(errPos,
+						"Type %s; Field %s; introspectionHeaders in @custom directive should be of the form 'remote_headername:local_headername' or just 'headername'"+
+							", found: `%s`.",
+						typ.Name, field.Name, h.Value.Raw))
+				}
+				iHeaders[key[0]] = key[1]
+			}
+		}
+	}
+
+	if errs != nil {
+		return errs
+	}
+
+	if graphql != nil && !skip && graphqlOpDef != nil {
+		headers := http.Header{}
+		for key, val := range iHeaders {
+			// We try and fetch the value from the stored secrets.
+			value, ok := secrets[val]
+			if !ok {
+				return append(errs, gqlerror.ErrorPosf(graphql.Position,
+					"Type %s; Field %s; introspectionHeaders in @custom directive should use secrets to store the header value. To do that specify `%s` in this format '#Dgraph.Secret name value' at the bottom of your schema file.",
+					typ.Name, field.Name, val))
+			}
+			headers.Add(key, string(value))
+		}
 		if err := validateRemoteGraphql(&remoteGraphqlMetadata{
 			parentType:   typ,
 			parentField:  field,
 			graphqlOpDef: graphqlOpDef,
-			isBatch:      isBatchOperation,
+			isBatch:      isBatchMode,
 			url:          httpUrl.Raw,
+			headers:      headers,
 			schema:       sch,
 		}); err != nil {
-			return gqlerror.ErrorPosf(graphql.Position,
+			errs = append(errs, gqlerror.ErrorPosf(graphql.Position,
 				"Type %s; Field %s: inside graphql in @custom directive, %s",
-				typ.Name, field.Name, err.Error())
+				typ.Name, field.Name, err.Error()))
 		}
 	}
 
-	return nil
+	return errs
 }
 
 func idValidation(sch *ast.Schema,
 	typ *ast.Definition,
 	field *ast.FieldDefinition,
-	dir *ast.Directive) *gqlerror.Error {
-
-	if field.Type.String() != "String!" {
-		return gqlerror.ErrorPosf(
-			dir.Position,
-			"Type %s; Field %s: with @id directive must be of type String!, not %s",
-			typ.Name, field.Name, field.Type.String())
+	dir *ast.Directive,
+	secrets map[string]x.SensitiveByteSlice) gqlerror.List {
+	if field.Type.String() == "String!" {
+		return nil
 	}
-	return nil
+	return []*gqlerror.Error{gqlerror.ErrorPosf(
+		dir.Position,
+		"Type %s; Field %s: with @id directive must be of type String!, not %s",
+		typ.Name, field.Name, field.Type.String())}
 }
 
 func searchMessage(sch *ast.Schema, field *ast.FieldDefinition) string {
@@ -1459,6 +1752,14 @@ func searchMessage(sch *ast.Schema, field *ast.FieldDefinition) string {
 func isScalar(s string) bool {
 	_, ok := scalarToDgraph[s]
 	return ok
+}
+
+func isReservedArgument(name string) bool {
+	switch name {
+	case "first", "offset", "filter", "order":
+		return true
+	}
+	return false
 }
 
 func isReservedKeyWord(name string) bool {

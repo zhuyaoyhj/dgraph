@@ -8,9 +8,428 @@ and this project will adhere to [Calendar Versioning](https://calver.org/) start
 
 ### Changed
 
+- GraphQL
+  - Make updateGQLSchema always return the new schema. ([#5540][])
+  - Allow user to define and pass arguments to fields. ([#5562][])	
+  - Move alias to end of graphql pipeline. ([#5369][])	
+- Return error list while validating GraphQL schema. ([#5576][])
+- Send CID for sentry events. ([#5625][])
+- Alpha: Enable bloom filter caching ([#5552][])
+- Add support for multiple uids in uid_in function ([#5292][])
+- Tag sentry events with additional version details. ([#5726][])
+- Sentry opt out banner. ([#5727][]) 
+- Update badger to commit [e7b6e76f96e8][]. ([#5537][])
+- Update Badger ([#5661][])
+  - Fix assert in background compression and encryption. ([dgraph-io/badger#1366][])
+  - GC: Consider size of value while rewriting ([dgraph-io/badger#1357][])
+  - Restore: Account for value size as well ([dgraph-io/badger#1358][])
+  - Tests: Do not leave behind state goroutines ([dgraph-io/badger#1349][])
+  - Support disabling conflict detection ([dgraph-io/badger#1344][])
+  - Compaction: Expired keys and delete markers are never purged ([dgraph-io/badger#1354][])
+  - Fix build on golang tip ([dgraph-io/badger#1355][])
+  - StreamWriter: Close head writer ([dgraph-io/badger#1347][])
+  - Iterator: Always add key to txn.reads ([dgraph-io/badger#1328][])
+  - Add immudb to the project list ([dgraph-io/badger#1341][])
+  - DefaultOptions: Set KeepL0InMemory to false ([dgraph-io/badger#1345][])
+- Enterprise features
+  - /health endpoint now shows Enterprise Features available. Fixes [#5234][]. ([#5293][])
+  - GraphQL Changes for /health endpoint's Enterprise features info. Fixes [#5234][]. ([#5308][])
+  - Use encryption in temp badger, fix compilation on 32-bit. ([#4963][])
+  - Only process restore request in the current alpha if it's the leader. ([#5657][])
+  - Vault: Support kv v1 and decode base64 key. ([#5725][])
+  - **Breaking changes**
+    - [BREAKING] GraphQL: Add camelCase for add/update mutation. Fixes [#5380][]. ([#5547][])
+
 ### Added
 
+- GraphQL
+  - Add Graphql-TouchedUids header in HTTP response. ([#5572][])
+  - Introduce `@cascade` in GraphQL. Fixes [#4789][]. ([#5511][])	
+  - Add authentication feature and http admin endpoints. Fixes [#4758][]. ([#5162][])	
+  - Support existing gqlschema nodes without xid. ([#5457][])
+  - Add custom logic feature. ([#5004][])
+  - Add extensions to query response. ([#5157][])
+- Add LogRequest variable to GraphQL config input. ([#5197][])
+- Allow backup ID to be passed to restore endpoint. ([#5208][])
+- Added support for application/graphQL to graphQL endpoints. ([#5125][])
+- Add support for xidmap in bulkloader. Fixes [#4917][]. ([#5090][])
+- Add GraphQL admin endpoint to list backups. ([#5307][]) 
+- Enterprise features
+  - Backup can take S3 credentials from IAM. ([#5387][])
+  - Online restore. ([#5095][]) 
+  - Add support for encrypted backups in online restores. ([#5226][])
+  - **Breaking changes**
+    - [BREAKING] Vault Integration. ([#5402][])
+ 
 ### Fixed
+
+- GraphQL
+  - Add more validations for coercion of object/scalar and vice versa. ([#5534][])
+  - Apply type filter for get query at root level. ([#5497][])
+  - Fix mutation on predicate with special characters having dgraph directive. Fixes [#5296][]. ([#5526][])	
+  - Return better error message if a type only contains ID field. ([#5531][])
+  - Coerce value for scalar types correctly. ([#5487][])
+  - Minor delete mutation msg fix. ([#5316][])
+  - Report all errors during schema update. ([#5425][])
+  - Do graphql query/mutation validation in the mock server. ([#5362][])
+  - Remove custom directive from internal schema. ([#5354][])
+  - Recover from panic within goroutines used for resolving custom fields. ([#5329][])
+  - Start collecting and returning errors from remote remote GraphQL endpoints. ([#5328][])
+  - Fix response for partial admin queries. ([#5317][])		
+- Online restores only processes backups for the alpha's group. ([#5588][])
+- Avoid assigning duplicate RAFT IDs to new nodes. Fixes [#5436][]. ([#5571][])
+- Alpha: Gracefully shutdown ludicrous mode. ([#5561][])	
+- Use rampMeter for Executor. ([#5503][])
+- Dont set n.ops map entries to nil. Instead just delete them. ([#5551][])
+- Add check on rebalance interval. ([#5544][])
+- Queries or mutations shouldn't be part of generated Dgraph schema. ([#5524][])
+- Sent restore proposals to all groups asyncronouosly. ([#5467][])
+- Fix long lines in export.go. ([#5498][])
+- Fix warnings about unkeyed literals. ([#5492][])
+- Remove redundant conversions between string and []byte. ([#5478][])
+- Propogate request context while handling queries. ([#5418][])
+- K-Shortest path query fix. Fixes [#5426][]. ([#5410][])			
+- Worker: Return nil on error. ([#5414][])
+- Fix warning about issues with the cancel function. ([#5397][]). 
+- Replace TxnWriter with WriteBatch. ([#5007][])
+- Add a check to throw an error is a nil pointer is passed to unmarshalOrCopy. ([#5334][])
+- Remove noisy logs in tablet move. ([#5333][])
+- Support bulk loader use-case to import unencrypted export and encrypt the result.  ([#5209][])
+- Handle Dgraph shutdown gracefully. Fixes [#3873][]. ([#5137][], [#5138][])
+- If we don't have any schema updates, avoid running the indexing sequence. ([#5126][])
+- Pass read timestamp to getNew. ([#5085][])
+- Indicate dev environment in Sentry events. ([#5051][])	
+- Replaced s2 contains point methods with go-geom. ([#5023][]
+- Change tablet size calculation to not depend on the right key. Fixes [#5408][]. ([#5684][])	
+- **Breaking changes**
+  - [BREAKING] Namespace dgraph internal types/predicates with `dgraph.` Fixes [#4878][]. ([#5185][])
+  - [BREAKING] Remove shorthand for store_xids in bulk loader.  ([#5148][])
+  - [BREAKING] Introduce new facets format. Fixes [#4798][], [#4581][], [#4907][]. ([#5424][])
+- Enterprise:
+  - Backup: Change groupId from int to uint32. ([#5605][])
+  - Backup: Use a sync.Pool to allocate KVs during backup. ([#5579][])
+  - Restore: Make backupId optional in restore GraphQL interface. ([#5685][])
+  - Restore: Move tablets to right group when restoring a backup. ([#5682][])
+
+[#5661]: https://github.com/dgraph-io/dgraph/issues/5661
+[dgraph-io/badger#1366]: https://github.com/dgraph-io/badger/issues/1366
+[dgraph-io/badger#1357]: https://github.com/dgraph-io/badger/issues/1357
+[dgraph-io/badger#1358]: https://github.com/dgraph-io/badger/issues/1358
+[dgraph-io/badger#1349]: https://github.com/dgraph-io/badger/issues/1349
+[dgraph-io/badger#1344]: https://github.com/dgraph-io/badger/issues/1344
+[dgraph-io/badger#1354]: https://github.com/dgraph-io/badger/issues/1354
+[dgraph-io/badger#1355]: https://github.com/dgraph-io/badger/issues/1355
+[dgraph-io/badger#1347]: https://github.com/dgraph-io/badger/issues/1347
+[dgraph-io/badger#1328]: https://github.com/dgraph-io/badger/issues/1328
+[dgraph-io/badger#1341]: https://github.com/dgraph-io/badger/issues/1341
+[dgraph-io/badger#1345]: https://github.com/dgraph-io/badger/issues/1345
+[#5725]: https://github.com/dgraph-io/dgraph/issues/5725
+[#5579]: https://github.com/dgraph-io/dgraph/issues/5579
+[#5685]: https://github.com/dgraph-io/dgraph/issues/5685
+[#5682]: https://github.com/dgraph-io/dgraph/issues/5682
+[#5572]: https://github.com/dgraph-io/dgraph/issues/5572
+[#4789]: https://github.com/dgraph-io/dgraph/issues/4789
+[#5511]: https://github.com/dgraph-io/dgraph/issues/5511
+[#4758]: https://github.com/dgraph-io/dgraph/issues/4758
+[#5162]: https://github.com/dgraph-io/dgraph/issues/5162
+[#5457]: https://github.com/dgraph-io/dgraph/issues/5457
+[#5004]: https://github.com/dgraph-io/dgraph/issues/5004
+[#5134]: https://github.com/dgraph-io/dgraph/issues/5134
+[#5157]: https://github.com/dgraph-io/dgraph/issues/5157
+[#5197]: https://github.com/dgraph-io/dgraph/issues/5197
+[#5387]: https://github.com/dgraph-io/dgraph/issues/5387
+[#5226]: https://github.com/dgraph-io/dgraph/issues/5226
+[#5208]: https://github.com/dgraph-io/dgraph/issues/5208
+[#5125]: https://github.com/dgraph-io/dgraph/issues/5125
+[#5095]: https://github.com/dgraph-io/dgraph/issues/5095
+[#4917]: https://github.com/dgraph-io/dgraph/issues/4917
+[#5090]: https://github.com/dgraph-io/dgraph/issues/5090
+[#5307]: https://github.com/dgraph-io/dgraph/issues/5307
+[#5402]: https://github.com/dgraph-io/dgraph/issues/5402
+[#5540]: https://github.com/dgraph-io/dgraph/issues/5540
+[#5576]: https://github.com/dgraph-io/dgraph/issues/5576
+[#5625]: https://github.com/dgraph-io/dgraph/issues/5625
+[#5562]: https://github.com/dgraph-io/dgraph/issues/5562
+[#5552]: https://github.com/dgraph-io/dgraph/issues/5552
+[#5369]: https://github.com/dgraph-io/dgraph/issues/5369
+[#5292]: https://github.com/dgraph-io/dgraph/issues/5292
+[#5234]: https://github.com/dgraph-io/dgraph/issues/5234
+[#5293]: https://github.com/dgraph-io/dgraph/issues/5293
+[#5234]: https://github.com/dgraph-io/dgraph/issues/5234
+[#5308]: https://github.com/dgraph-io/dgraph/issues/5308
+[#4963]: https://github.com/dgraph-io/dgraph/issues/4963
+[#5380]: https://github.com/dgraph-io/dgraph/issues/5380
+[#5547]: https://github.com/dgraph-io/dgraph/issues/5547
+[#5534]: https://github.com/dgraph-io/dgraph/issues/5534
+[#5497]: https://github.com/dgraph-io/dgraph/issues/5497
+[#5296]: https://github.com/dgraph-io/dgraph/issues/5296
+[#5526]: https://github.com/dgraph-io/dgraph/issues/5526
+[#5531]: https://github.com/dgraph-io/dgraph/issues/5531
+[#5487]: https://github.com/dgraph-io/dgraph/issues/5487
+[#5316]: https://github.com/dgraph-io/dgraph/issues/5316
+[#5425]: https://github.com/dgraph-io/dgraph/issues/5425
+[#5362]: https://github.com/dgraph-io/dgraph/issues/5362
+[#5354]: https://github.com/dgraph-io/dgraph/issues/5354
+[#5329]: https://github.com/dgraph-io/dgraph/issues/5329
+[#5328]: https://github.com/dgraph-io/dgraph/issues/5328
+[#5317]: https://github.com/dgraph-io/dgraph/issues/5317
+[#5588]: https://github.com/dgraph-io/dgraph/issues/5588
+[#5605]: https://github.com/dgraph-io/dgraph/issues/5605
+[#5571]: https://github.com/dgraph-io/dgraph/issues/5571
+[#5561]: https://github.com/dgraph-io/dgraph/issues/5561
+[#5503]: https://github.com/dgraph-io/dgraph/issues/5503
+[#5551]: https://github.com/dgraph-io/dgraph/issues/5551
+[#5544]: https://github.com/dgraph-io/dgraph/issues/5544
+[#5524]: https://github.com/dgraph-io/dgraph/issues/5524
+[#5467]: https://github.com/dgraph-io/dgraph/issues/5467
+[#5498]: https://github.com/dgraph-io/dgraph/issues/5498
+[#5492]: https://github.com/dgraph-io/dgraph/issues/5492
+[#5478]: https://github.com/dgraph-io/dgraph/issues/5478
+[#5418]: https://github.com/dgraph-io/dgraph/issues/5418
+[#5426]: https://github.com/dgraph-io/dgraph/issues/5426
+[#5410]: https://github.com/dgraph-io/dgraph/issues/5410
+[#5414]: https://github.com/dgraph-io/dgraph/issues/5414
+[#5397]: https://github.com/dgraph-io/dgraph/issues/5397
+[#5007]: https://github.com/dgraph-io/dgraph/issues/5007
+[#5334]: https://github.com/dgraph-io/dgraph/issues/5334
+[#5333]: https://github.com/dgraph-io/dgraph/issues/5333
+[#5209]: https://github.com/dgraph-io/dgraph/issues/5209
+[#3873]: https://github.com/dgraph-io/dgraph/issues/3873
+[#5138]: https://github.com/dgraph-io/dgraph/issues/5138
+[#3873]: https://github.com/dgraph-io/dgraph/issues/3873
+[#5137]: https://github.com/dgraph-io/dgraph/issues/5137
+[#5126]: https://github.com/dgraph-io/dgraph/issues/5126
+[#5085]: https://github.com/dgraph-io/dgraph/issues/5085
+[#5051]: https://github.com/dgraph-io/dgraph/issues/5051
+[#5023]: https://github.com/dgraph-io/dgraph/issues/5023
+[#4878]: https://github.com/dgraph-io/dgraph/issues/4878
+[#5185]: https://github.com/dgraph-io/dgraph/issues/5185
+[#5148]: https://github.com/dgraph-io/dgraph/issues/5148
+[#4798]: https://github.com/dgraph-io/dgraph/issues/4798
+[#4581]: https://github.com/dgraph-io/dgraph/issues/4581
+[#4907]: https://github.com/dgraph-io/dgraph/issues/4907
+[#5424]: https://github.com/dgraph-io/dgraph/issues/5424
+[#5436]: https://github.com/dgraph-io/dgraph/issues/5436
+[#5537]: https://github.com/dgraph-io/dgraph/issues/5537
+[#5657]: https://github.com/dgraph-io/dgraph/issues/5657
+[#5726]: https://github.com/dgraph-io/dgraph/issues/5726
+[#5727]: https://github.com/dgraph-io/dgraph/issues/5727
+[#5408]: https://github.com/dgraph-io/dgraph/issues/5408
+[#5684]: https://github.com/dgraph-io/dgraph/issues/5684
+[e7b6e76f96e8]: https://github.com/dgraph-io/badger/commit/e7b6e76f96e8
+
+## [20.03.4] - Unreleased
+[20.03.4]: https://github.com/dgraph-io/dgraph/compare/v20.03.3...v20.03.4
+
+### Changed
+- Update badger 06/09/2020 ([#5616][])
+
+### Fixed
+- GraphQL
+  - Minor delete mutation msg fix. ([#5564][])
+  - Make updateGQLSchema always return the new schema. ([#5582][])
+  - Fix mutation on predicate with special characters in the `@dgraph` directive. ([#5577][])
+  - Updated mutation rewriting to fix OOM issue. ([#5536][])
+- Dont set n.ops map entries to nil. Instead just delete them. ([#5557][])
+- Alpha: Enable bloom filter caching. ([#5555][])
+- Alpha: Gracefully shutdown ludicrous mode. ([#5584][])
+- Alpha Close: Wait for indexing to complete. Fixes [#3873][]. ([#5597][])
+- K shortest paths queries fix. ([#5548][])
+- Add check on rebalance interval. ([#5594][])
+- Remove noisy logs in tablet move. ([#5591][])
+- Avoid assigning duplicate RAFT IDs to new nodes. Fixes [#4536][]. ([#5604][])
+- Send CID for sentry events. ([#5633][])
+- Use rampMeter for Executor. ([#5503][])
+- Fix snapshot calculation in ludicrous mode. ([#5636][])
+- Update badger: Avoid panic in fillTables(). Fix assert in background compression and encryption. ([#5680][])
+- Avoid panic in handleValuePostings. ([#5678][])
+- Enterprise features
+  - Backup: Change groupId from int to uint32. ([#5614][])
+  - Backup: Use a sync.Pool to allocate KVs. ([#5579][])
+
+[#5616]: https://github.com/dgraph-io/dgraph/issues/5616
+[#5564]: https://github.com/dgraph-io/dgraph/issues/5564
+[#5582]: https://github.com/dgraph-io/dgraph/issues/5582
+[#5577]: https://github.com/dgraph-io/dgraph/issues/5577
+[#5536]: https://github.com/dgraph-io/dgraph/issues/5536
+[#5557]: https://github.com/dgraph-io/dgraph/issues/5557
+[#5555]: https://github.com/dgraph-io/dgraph/issues/5555
+[#5584]: https://github.com/dgraph-io/dgraph/issues/5584
+[#3873]: https://github.com/dgraph-io/dgraph/issues/3873
+[#5597]: https://github.com/dgraph-io/dgraph/issues/5597
+[#5548]: https://github.com/dgraph-io/dgraph/issues/5548
+[#5594]: https://github.com/dgraph-io/dgraph/issues/5594
+[#5591]: https://github.com/dgraph-io/dgraph/issues/5591
+[#4536]: https://github.com/dgraph-io/dgraph/issues/4536
+[#5604]: https://github.com/dgraph-io/dgraph/issues/5604
+[#5633]: https://github.com/dgraph-io/dgraph/issues/5633
+[#5503]: https://github.com/dgraph-io/dgraph/issues/5503
+[#5636]: https://github.com/dgraph-io/dgraph/issues/5636
+[#5680]: https://github.com/dgraph-io/dgraph/issues/5680
+[#5614]: https://github.com/dgraph-io/dgraph/issues/5614
+[#5579]: https://github.com/dgraph-io/dgraph/issues/5579
+[#5678]: https://github.com/dgraph-io/dgraph/issues/5678
+
+## [1.2.6] - Unreleased
+[1.2.6]: https://github.com/dgraph-io/dgraph/compare/v1.2.5...v1.2.6
+
+### Fixed
+
+- Alpha: Enable bloom filter caching. ([#5554][]) 	
+- K shortest paths queries fix. ([#5596][])	
+- Add check on rebalance interval. ([#5595][]) 	
+- Change error message in case of successful license application. ([#5593][])	
+- Remove noisy logs in tablet move. ([#5592][]) 	
+- Avoid assigning duplicate RAFT IDs to new nodes. Fixes [#5436][]. ([#5603][]) 	
+- Update badger: Set KeepL0InMemory to false (badger default), and Set DetectConflicts to false. ([#5615][])
+- Enterprise features
+  - Backup: Change groupId from int to uint32. ([#5613][])
+
+[#5554]: https://github.com/dgraph-io/dgraph/issues/5554
+[#5596]: https://github.com/dgraph-io/dgraph/issues/5596
+[#5595]: https://github.com/dgraph-io/dgraph/issues/5595
+[#5593]: https://github.com/dgraph-io/dgraph/issues/5593
+[#5592]: https://github.com/dgraph-io/dgraph/issues/5592
+[#5436]: https://github.com/dgraph-io/dgraph/issues/5436
+[#5603]: https://github.com/dgraph-io/dgraph/issues/5603
+[#5615]: https://github.com/dgraph-io/dgraph/issues/5615
+[#5613]: https://github.com/dgraph-io/dgraph/issues/5613
+
+## [20.03.3] - 2020-06-02
+[20.03.3]: https://github.com/dgraph-io/dgraph/compare/v20.03.1...v20.03.3
+
+### Changed
+
+- Sentry Improvements: Segregate dev and prod events into their own Sentry projects. Remove Panic back-traces, Set the type of exception to the panic message. ([#5305][])
+- /health endpoint now shows EE Features available and GraphQL changes. ([#5304][]) 
+- Return error response if encoded response is > 4GB in size. Replace idMap with idSlice in encoder. ([#5359][]) 
+- Initialize sentry at the beginning of alpha.Run(). ([#5429][])  
+
+### Added
+- Adds ludicrous mode to live loader. ([#5419][]) 
+- GraphQL: adds transactions to graphql mutations ([#5485][])
+
+### Fixed
+
+- Export: Ignore deleted predicates from schema. Fixes [#5053][]. ([#5326][])
+- GraphQL: ensure upserts don't have accidental edge removal. Fixes [#5355][]. ([#5356][])
+- Fix segmentation fault in query.go. ([#5377][])
+- Fix empty string checks. ([#5390][]) 
+- Update group checksums when combining multiple deltas. Fixes [#5368][]. ([#5394][]) 
+- Change the default ratio of traces from 1 to 0.01. ([#5405][]) 
+- Fix protobuf headers check. ([#5381][])
+- Stream the full set of predicates and types during a snapshot. ([#5444][])
+- Support passing GraphQL schema to bulk loader. Fixes [#5235][]. ([#5521][]) 
+- Export GraphQL schema to separate file. Fixes [#5235][]. ([#5528][]) 
+- Fix memory leak in live loader. ([#5473][]) 
+- Replace strings.Trim with strings.TrimFunc in ParseRDF. ([#5494][]) 
+- Return nil instead of emptyTablet in groupi.Tablet(). ([#5469][]) 
+- Use pre-allocated protobufs during backups. ([#5404][]) 
+- During shutdown, generate snapshot before closing raft node. ([#5476][])
+- Get lists of predicates and types before sending the snapshot. ([#5488][]) 
+- Fix panic for sending on a closed channel. ([#5479][])
+- Fix inconsistent bulk loader failures. Fixes [#5361][]. ([#5537][])
+- GraphQL: fix password rewriting. ([#5483][]) 
+- GraphQL: Fix non-unique schema issue. ([#5481][]) 
+- Enterprise features
+  - Print error when applying enterprise license fails. ([#5342][])
+  - Apply the option enterprise_license only after the node's Raft is initialized and it is the leader. Don't apply the     trial license if a license already exists. Disallow the enterprise_license option for OSS build and bail out. Apply the option even if there is a license from a previous life of the Zero. ([#5384][])
+
+### Security
+
+- Use SensitiveByteSlice type for hmac secret. ([#5450][])
+
+
+[#5444]: https://github.com/dgraph-io/dgraph/issues/5444
+[#5305]: https://github.com/dgraph-io/dgraph/issues/5305
+[#5304]: https://github.com/dgraph-io/dgraph/issues/5304
+[#5359]: https://github.com/dgraph-io/dgraph/issues/5359
+[#5429]: https://github.com/dgraph-io/dgraph/issues/5429
+[#5342]: https://github.com/dgraph-io/dgraph/issues/5342
+[#5326]: https://github.com/dgraph-io/dgraph/issues/5326
+[#5356]: https://github.com/dgraph-io/dgraph/issues/5356
+[#5377]: https://github.com/dgraph-io/dgraph/issues/5377
+[#5384]: https://github.com/dgraph-io/dgraph/issues/5384
+[#5390]: https://github.com/dgraph-io/dgraph/issues/5390
+[#5394]: https://github.com/dgraph-io/dgraph/issues/5394
+[#5405]: https://github.com/dgraph-io/dgraph/issues/5405
+[#5053]: https://github.com/dgraph-io/dgraph/issues/5053
+[#5355]: https://github.com/dgraph-io/dgraph/issues/5355
+[#5368]: https://github.com/dgraph-io/dgraph/issues/5368
+[#5450]: https://github.com/dgraph-io/dgraph/issues/5450
+[#5381]: https://github.com/dgraph-io/dgraph/issues/5381
+[#5528]: https://github.com/dgraph-io/dgraph/issues/5528
+[#5473]: https://github.com/dgraph-io/dgraph/issues/5473
+[#5494]: https://github.com/dgraph-io/dgraph/issues/5494
+[#5469]: https://github.com/dgraph-io/dgraph/issues/5469
+[#5404]: https://github.com/dgraph-io/dgraph/issues/5404
+[#5476]: https://github.com/dgraph-io/dgraph/issues/5476
+[#5488]: https://github.com/dgraph-io/dgraph/issues/5488
+[#5483]: https://github.com/dgraph-io/dgraph/issues/5483
+[#5481]: https://github.com/dgraph-io/dgraph/issues/5481
+[#5481]: https://github.com/dgraph-io/dgraph/issues/5481
+[#5235]: https://github.com/dgraph-io/dgraph/issues/5235
+[#5419]: https://github.com/dgraph-io/dgraph/issues/5419
+[#5485]: https://github.com/dgraph-io/dgraph/issues/5485
+[#5479]: https://github.com/dgraph-io/dgraph/issues/5479
+[#5361]: https://github.com/dgraph-io/dgraph/issues/5361
+[#5537]: https://github.com/dgraph-io/dgraph/issues/5537
+
+## [1.2.5] - 2020-06-02
+[1.2.5]: https://github.com/dgraph-io/dgraph/compare/v1.2.3...v1.2.5
+
+### Changed
+
+- Return error response if encoded response is > 4GB in size. Replace idMap with idSlice in encoder. ([#5359][])
+- Change the default ratio of traces from 1 to 0.01. ([#5405][]) 
+
+### Fixed
+
+- Export: Ignore deleted predicates from schema. Fixes [#5053][]. ([#5327][])
+- Fix segmentation fault in query.go. ([#5377][]) 
+- Update group checksums when combining multiple deltas. Fixes [#5368][]. ([#5394][]) 
+- Fix empty string checks. ([#5396][])
+- Fix protobuf headers check. ([#5381][])
+- Stream the full set of predicates and types during a snapshot. ([#5444][])
+- Use pre-allocated protobufs during backups. ([#5508][])
+- Replace strings.Trim with strings.TrimFunc in ParseRDF. ([#5494][]) 
+- Return nil instead of emptyTablet in groupi.Tablet(). ([#5469][]) 
+- During shutdown, generate snapshot before closing raft node. ([#5476][]) 
+- Get lists of predicates and types before sending the snapshot. ([#5488][]) 
+- Move runVlogGC to x and use it in zero as well. ([#5468][]) 
+- Fix inconsistent bulk loader failures. Fixes [#5361][]. ([#5537][])
+
+### Security
+
+- Use SensitiveByteSlice type for hmac secret. ([#5451][])
+
+[#5444]: https://github.com/dgraph-io/dgraph/issues/5444
+[#5359]: https://github.com/dgraph-io/dgraph/issues/5359
+[#5405]: https://github.com/dgraph-io/dgraph/issues/5405
+[#5327]: https://github.com/dgraph-io/dgraph/issues/5327
+[#5377]: https://github.com/dgraph-io/dgraph/issues/5377
+[#5394]: https://github.com/dgraph-io/dgraph/issues/5394
+[#5396]: https://github.com/dgraph-io/dgraph/issues/5396
+[#5053]: https://github.com/dgraph-io/dgraph/issues/5053
+[#5368]: https://github.com/dgraph-io/dgraph/issues/5368
+[#5451]: https://github.com/dgraph-io/dgraph/issues/5451
+[#5381]: https://github.com/dgraph-io/dgraph/issues/5381
+[#5327]: https://github.com/dgraph-io/dgraph/issues/5327
+[#5377]: https://github.com/dgraph-io/dgraph/issues/5377
+[#5508]: https://github.com/dgraph-io/dgraph/issues/5508
+[#5494]: https://github.com/dgraph-io/dgraph/issues/5494
+[#5469]: https://github.com/dgraph-io/dgraph/issues/5469
+[#5476]: https://github.com/dgraph-io/dgraph/issues/5476
+[#5488]: https://github.com/dgraph-io/dgraph/issues/5488
+[#5468]: https://github.com/dgraph-io/dgraph/issues/5468
+[#5361]: https://github.com/dgraph-io/dgraph/issues/5361
+[#5537]: https://github.com/dgraph-io/dgraph/issues/5537
+
+## [20.03.2] - 2020-05-15
+This release was removed
+
+## [1.2.4] - 2020-05-15
+This release was removed
 
 ## [20.03.1] - 2020-04-24
 [20.03.1]: https://github.com/dgraph-io/dgraph/compare/v20.03.0...v20.03.1
@@ -1569,7 +1988,7 @@ upgrading or rolling back. The underlying data format has been changed.**
 
 - This version switches Badger Options to reasonable settings for p and w directories. This removes the need to expose `--badger.options` option and removes the `none` option from `--badger.vlog`. ([#2605](https://github.com/dgraph-io/dgraph/issues/2605))
 - Add support for ignoring parse errors in bulk loader with the option `--ignore_error`. ([#2599](https://github.com/dgraph-io/dgraph/issues/2599))
-- Introduction of new command `dgraph cert` to simplify initial TLS setup. See [TLS configuration docs](https://docs.dgraph.io/deploy/#tls-configuration) for more info.
+- Introduction of new command `dgraph cert` to simplify initial TLS setup. See [TLS configuration docs](https://dgraph.io/docs/deploy/#tls-configuration) for more info.
 - Add `expand(_forward_)` and `expand(_reverse_)` to GraphQL+- query language. If `_forward_` is passed as an argument to `expand()`, all predicates at that level (minus any reverse predicates) are retrieved.
 If `_reverse_` is passed as an argument to `expand()`, only the reverse predicates are retrieved.
 
@@ -1918,15 +2337,15 @@ For `/commit` API, keys are passed in the body.
 
 ### Added
 
-* Dgraph adds support for distributed ACID transactions (a blog post is in works). Transactions can be done via the Go, Java or HTTP clients (JS client coming). See [docs here](https://docs.dgraph.io/clients/).
-* Support for Indexing via [Custom tokenizers](https://docs.dgraph.io/query-language/#indexing-with-custom-tokenizers).
+* Dgraph adds support for distributed ACID transactions (a blog post is in works). Transactions can be done via the Go, Java or HTTP clients (JS client coming). See [docs here](https://dgraph.io/docs/clients/).
+* Support for Indexing via [Custom tokenizers](https://dgraph.io/docs/query-language/#indexing-with-custom-tokenizers).
 * Support for CJK languages in the full-text index.
 
 ### Changed
 
 #### Running Dgraph
 
-* We have consolidated all the `server`, `zero`, `live/bulk-loader` binaries into a single `dgraph` binary for convenience. Instructions for running Dgraph can be found in the [docs](https://docs.dgraph.io/get-started/).
+* We have consolidated all the `server`, `zero`, `live/bulk-loader` binaries into a single `dgraph` binary for convenience. Instructions for running Dgraph can be found in the [docs](https://dgraph.io/docs/get-started/).
 * For Dgraph server, Raft ids can be assigned automatically. A user can optionally still specify an ID, via `--idx` flag.
 * `--peer` flag which was used to specify another Zero instance’s IP address is being replaced by `--zero` flag to indicate the address corresponds to Dgraph zero.
 * `port`, `grpc_port` and `worker_port` flags have been removed from Dgraph server and Zero. The ports are:
@@ -1951,14 +2370,14 @@ Users can set `port_offset` flag, to modify these fixed ports.
 }
 ```
 * Facets response structure has been modified and is a lot flatter. Facet key is now `predicate|facet_name`.
-Examples for [Go client](https://godoc.org/github.com/dgraph-io/dgraph/client#example-Txn-Mutate-Facets) and [HTTP](https://docs.dgraph.io/query-language/#facets-edge-attributes).
+Examples for [Go client](https://godoc.org/github.com/dgraph-io/dgraph/client#example-Txn-Mutate-Facets) and [HTTP](https://dgraph.io/docs/query-language/#facets-edge-attributes).
 * Query latency is now returned as numeric (ns) instead of string.
-* [`Recurse`](https://docs.dgraph.io/query-language/#recurse-query) is now a directive. So queries with `recurse` keyword at root won't work anymore.
-* Syntax for [`count` at root](https://docs.dgraph.io/query-language/#count) has changed. You need to ask for `count(uid)`, instead of `count()`.
+* [`Recurse`](https://dgraph.io/docs/query-language/#recurse-query) is now a directive. So queries with `recurse` keyword at root won't work anymore.
+* Syntax for [`count` at root](https://dgraph.io/docs/query-language/#count) has changed. You need to ask for `count(uid)`, instead of `count()`.
 
 #### Mutations
 
-* Mutations can only be done via `Mutate` Grpc endpoint or via [`/mutate` HTTP handler](https://docs.dgraph.io/clients/#transactions).
+* Mutations can only be done via `Mutate` Grpc endpoint or via [`/mutate` HTTP handler](https://dgraph.io/docs/clients/#transactions).
 * `Mutate` Grpc endpoint can be used to set/ delete JSON, or set/ delete a list of N-Quads and set/ delete raw RDF strings.
 * Mutation blocks don't require the mutation keyword anymore. Here is an example of the new syntax.
 ```
@@ -1969,7 +2388,7 @@ Examples for [Go client](https://godoc.org/github.com/dgraph-io/dgraph/client#ex
   }
 }
 ```
-* [`Upsert`](https://docs.dgraph.io/v0.8.3/query-language/#upsert) directive and [mutation variables](https://docs.dgraph.io/v0.8.3/query-language/#variables-in-mutations) go away. Both these functionalities can now easily be achieved via transactions.
+* [`Upsert`](https://dgraph.io/docs/v0.8.3/query-language/#upsert) directive and [mutation variables](https://dgraph.io/docs/v0.8.3/query-language/#variables-in-mutations) go away. Both these functionalities can now easily be achieved via transactions.
 
 #### Schema
 
@@ -1982,7 +2401,7 @@ Examples for [Go client](https://godoc.org/github.com/dgraph-io/dgraph/client#ex
 * `Query` Grpc endpoint returns response in JSON under `Json` field instead of protocol buffer. `client.Unmarshal` method also goes away from the Go client. Users can use `json.Unmarshal` for unmarshalling the response.
 * Response for predicate of type `geo` can be unmarshalled into a struct. Example [here](https://godoc.org/github.com/dgraph-io/dgraph/client#example-package--SetObject).
 * `Node` and `Edge` structs go away along with the `SetValue...` methods. We recommend using [`SetJson`](https://godoc.org/github.com/dgraph-io/dgraph/client#example-package--SetObject) and `DeleteJson` fields to do mutations.
-* Examples of how to use transactions using the client can be found at https://docs.dgraph.io/clients/#go.
+* Examples of how to use transactions using the client can be found at https://dgraph.io/docs/clients/#go.
 
 ### Removed
 - Embedded dgraph goes away. We haven’t seen much usage of this feature. And it adds unnecessary maintenance overhead to the code.

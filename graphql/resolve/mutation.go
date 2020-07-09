@@ -28,6 +28,7 @@ import (
 	"github.com/dgraph-io/dgraph/graphql/dgraph"
 	"github.com/dgraph-io/dgraph/graphql/schema"
 	"github.com/dgraph-io/dgraph/x"
+	"github.com/golang/glog"
 	otrace "go.opencensus.io/trace"
 )
 
@@ -87,7 +88,7 @@ type MutationRewriter interface {
 	// Rewrite rewrites GraphQL mutation m into a Dgraph mutation - that could
 	// be as simple as a single DelNquads, or could be a Dgraph upsert mutation
 	// with a query and multiple mutations guarded by conditions.
-	Rewrite(ctx context.Context, m schema.Mutation) (*UpsertMutation, error)
+	Rewrite(ctx context.Context, m schema.Mutation) ([]*UpsertMutation, error)
 
 	// FromMutationResult takes a GraphQL mutation and the results of a Dgraph
 	// mutation and constructs a Dgraph query.  It's used to find the return
@@ -171,8 +172,20 @@ func (mr *dgraphResolver) Resolve(ctx context.Context, m schema.Mutation) (*Reso
 		span.Annotatef(nil, "mutation alias: [%s] type: [%s]", m.Alias(), m.MutationType())
 	}
 
+	resolverTrace := &schema.ResolverTrace{
+		Path:       []interface{}{m.ResponseName()},
+		ParentType: "Mutation",
+		FieldName:  m.ResponseName(),
+		ReturnType: m.Type().String(),
+	}
+	timer := newtimer(ctx, &resolverTrace.OffsetDuration)
+	timer.Start()
+	defer timer.Stop()
+
 	resolved, success := mr.rewriteAndExecute(ctx, m)
 	mr.resultCompleter.Complete(ctx, resolved)
+	resolverTrace.Dgraph = resolved.Extensions.Tracing.Execution.Resolvers[0].Dgraph
+	resolved.Extensions.Tracing.Execution.Resolvers[0] = resolverTrace
 	return resolved, success
 }
 
@@ -181,52 +194,90 @@ func getNumUids(m schema.Mutation, a map[string]string, r map[string]interface{}
 	case schema.AddMutation:
 		return len(a)
 	default:
-		mutated := extractMutated(r, m.ResponseName())
+		mutated := extractMutated(r, m.Name())
 		return len(mutated)
 	}
 }
 
-func (mr *dgraphResolver) rewriteAndExecute(
-	ctx context.Context,
+func (mr *dgraphResolver) rewriteAndExecute(ctx context.Context,
 	mutation schema.Mutation) (*Resolved, bool) {
+	var mutResp *dgoapi.Response
+	commit := false
+
+	defer func() {
+		if !commit && mutResp != nil && mutResp.Txn != nil {
+			mutResp.Txn.Aborted = true
+			err := mr.executor.CommitOrAbort(ctx, mutResp.Txn)
+			if err != nil {
+				glog.Errorf("Error occured while aborting transaction: %s", err)
+			}
+		}
+	}()
+
+	dgraphMutationDuration := &schema.LabeledOffsetDuration{Label: "mutation"}
+	dgraphQueryDuration := &schema.LabeledOffsetDuration{Label: "query"}
+	ext := &schema.Extensions{
+		Tracing: &schema.Trace{
+			Execution: &schema.ExecutionTrace{
+				Resolvers: []*schema.ResolverTrace{
+					{
+						Dgraph: []*schema.LabeledOffsetDuration{
+							dgraphMutationDuration,
+							dgraphQueryDuration,
+						},
+					},
+				},
+			},
+		},
+	}
 
 	emptyResult := func(err error) *Resolved {
 		return &Resolved{
-			Data:  map[string]interface{}{mutation.ResponseName(): nil},
-			Field: mutation,
-			Err:   err,
+			Data:       map[string]interface{}{mutation.Name(): nil},
+			Field:      mutation,
+			Err:        err,
+			Extensions: ext,
 		}
 	}
 
-	upsert, err := mr.mutationRewriter.Rewrite(ctx, mutation)
+	upserts, err := mr.mutationRewriter.Rewrite(ctx, mutation)
 	if err != nil {
 		return emptyResult(schema.GQLWrapf(err, "couldn't rewrite mutation %s", mutation.Name())),
 			resolverFailed
 	}
 
-	req := &dgoapi.Request{
-		Query:     dgraph.AsString(upsert.Query),
-		Mutations: upsert.Mutations,
-	}
-
-	mutResp, err := mr.executor.Execute(ctx, req)
-	if err != nil {
-		gqlErr := schema.GQLWrapLocationf(
-			err, mutation.Location(), "mutation %s failed", mutation.Name())
-		return emptyResult(gqlErr), resolverFailed
-	}
-
-	extM := &schema.Extensions{TouchedUids: mutResp.GetMetrics().GetNumUids()[touchedUidsKey]}
 	result := make(map[string]interface{})
-	if req.Query != "" && len(mutResp.GetJson()) != 0 {
-		if err := json.Unmarshal(mutResp.GetJson(), &result); err != nil {
-			return emptyResult(
-					schema.GQLWrapf(err, "Couldn't unmarshal response from Dgraph mutation")),
-				resolverFailed
-		}
-	}
+	req := &dgoapi.Request{}
+	newNodes := make(map[string]schema.Type)
 
-	authErr := authorizeNewNodes(ctx, mutResp.Uids, upsert.NewNodes, mr.executor, mutResp.Txn)
+	mutationTimer := newtimer(ctx, &dgraphMutationDuration.OffsetDuration)
+	mutationTimer.Start()
+
+	for _, upsert := range upserts {
+		req.Query = dgraph.AsString(upsert.Query)
+		req.Mutations = upsert.Mutations
+		mutResp, err = mr.executor.Execute(ctx, req)
+		if err != nil {
+			gqlErr := schema.GQLWrapLocationf(
+				err, mutation.Location(), "mutation %s failed", mutation.Name())
+			return emptyResult(gqlErr), resolverFailed
+
+		}
+
+		ext.TouchedUids += mutResp.GetMetrics().GetNumUids()[touchedUidsKey]
+		if req.Query != "" && len(mutResp.GetJson()) != 0 {
+			if err := json.Unmarshal(mutResp.GetJson(), &result); err != nil {
+				return emptyResult(
+						schema.GQLWrapf(err, "Couldn't unmarshal response from Dgraph mutation")),
+					resolverFailed
+			}
+		}
+
+		copyTypeMap(upsert.NewNodes, newNodes)
+	}
+	mutationTimer.Stop()
+
+	authErr := authorizeNewNodes(ctx, mutResp.Uids, newNodes, mr.executor, mutResp.Txn)
 	if authErr != nil {
 		return emptyResult(schema.GQLWrapf(authErr, "mutation failed")), resolverFailed
 	}
@@ -245,43 +296,38 @@ func (mr *dgraphResolver) rewriteAndExecute(
 				schema.GQLWrapf(authErr, "mutation failed, couldn't commit transaction")),
 			resolverFailed
 	}
+	commit = true
 
-	qryResp, err := mr.executor.Execute(ctx,
-		&dgoapi.Request{
-			Query:    dgraph.AsString(dgQuery),
-			ReadOnly: true,
-		})
+	queryTimer := newtimer(ctx, &dgraphQueryDuration.OffsetDuration)
+	queryTimer.Start()
+	qryResp, err := mr.executor.Execute(ctx, &dgoapi.Request{Query: dgraph.AsString(dgQuery),
+		ReadOnly: true})
+	queryTimer.Stop()
+
 	errs = schema.AppendGQLErrs(errs, schema.GQLWrapf(err,
 		"couldn't rewrite query for mutation %s", mutation.Name()))
 
-	extQ := &schema.Extensions{TouchedUids: qryResp.GetMetrics().GetNumUids()[touchedUidsKey]}
+	ext.TouchedUids += qryResp.GetMetrics().GetNumUids()[touchedUidsKey]
+	numUids := getNumUids(mutation, mutResp.Uids, result)
 
-	numUidsField := mutation.NumUidsField()
-	numUidsFieldRespName := schema.NumUid
-	numUids := 0
-	if numUidsField != nil {
-		numUidsFieldRespName = numUidsField.ResponseName()
-		numUids = getNumUids(mutation, mutResp.Uids, result)
-	}
-
-	// merge the extensions we got from Mutate and Query into extM
-	if extM == nil {
-		extM = extQ
+	var qryResult []byte
+	if mutation.MutationType() == schema.DeleteMutation && mutation.QueryField().SelectionSet() != nil {
+		qryResult = mutResp.GetJson()
 	} else {
-		extM.Merge(extQ)
+		qryResult = qryResp.GetJson()
 	}
 
-	resolved := completeDgraphResult(ctx, mutation.QueryField(), qryResp.GetJson(), errs)
+	resolved := completeDgraphResult(ctx, mutation.QueryField(), qryResult, errs)
 	if resolved.Data == nil && resolved.Err != nil {
 		return &Resolved{
 			Data: map[string]interface{}{
-				mutation.ResponseName(): map[string]interface{}{
-					numUidsFieldRespName:                 numUids,
-					mutation.QueryField().ResponseName(): nil,
+				mutation.Name(): map[string]interface{}{
+					schema.NumUid:                numUids,
+					mutation.QueryField().Name(): nil,
 				}},
 			Field:      mutation,
 			Err:        err,
-			Extensions: extM,
+			Extensions: ext,
 		}, resolverSucceeded
 	}
 
@@ -290,10 +336,10 @@ func (mr *dgraphResolver) rewriteAndExecute(
 	}
 
 	dgRes := resolved.Data.(map[string]interface{})
-	dgRes[numUidsFieldRespName] = numUids
-	resolved.Data = map[string]interface{}{mutation.ResponseName(): dgRes}
+	dgRes[schema.NumUid] = numUids
+	resolved.Data = map[string]interface{}{mutation.Name(): dgRes}
 	resolved.Field = mutation
-	resolved.Extensions = extM
+	resolved.Extensions = ext
 
 	return resolved, resolverSucceeded
 }
@@ -302,8 +348,11 @@ func (mr *dgraphResolver) rewriteAndExecute(
 func deleteCompletion() CompletionFunc {
 	return CompletionFunc(func(ctx context.Context, resolved *Resolved) {
 		if fld, ok := resolved.Data.(map[string]interface{}); ok {
-			if rsp, ok := fld[resolved.Field.ResponseName()].(map[string]interface{}); ok {
+			if rsp, ok := fld[resolved.Field.Name()].(map[string]interface{}); ok {
 				rsp["msg"] = "Deleted"
+				if rsp[schema.NumUid] == 0 {
+					rsp["msg"] = "No nodes were deleted"
+				}
 			}
 		}
 	})
@@ -370,6 +419,18 @@ func authorizeNewNodes(
 		varName := newRw.varGen.Next(typ, "", "")
 		newRw.varName = varName
 		authQueries, authFilter := newRw.rewriteAuthQueries(typ)
+
+		rn := newRw.selector(typ)
+		rbac := rn.EvaluateStatic(newRw.authVariables)
+
+		if rbac == schema.Negative {
+			return x.GqlErrorf("authorization failed")
+		}
+
+		if rbac == schema.Positive {
+			continue
+		}
+
 		if len(authQueries) == 0 {
 			continue
 		}
@@ -402,6 +463,7 @@ func authorizeNewNodes(
 
 		needsAuth = append(needsAuth, typeName)
 		authQrys[typeName] = append([]*gql.GraphQuery{typQuery, varQry}, authQueries...)
+
 	}
 
 	if len(needsAuth) == 0 {

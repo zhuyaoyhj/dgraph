@@ -19,6 +19,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dgraph-io/dgraph/protos/pb"
+
+	"github.com/dgraph-io/dgraph/query"
+
 	"github.com/pkg/errors"
 
 	"github.com/dgraph-io/badger/v2/y"
@@ -33,7 +37,6 @@ import (
 	"github.com/golang/glog"
 	otrace "go.opencensus.io/trace"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
 
@@ -55,9 +58,10 @@ func (s *Server) Login(ctx context.Context,
 
 	// record the client ip for this login request
 	var addr string
-	if peerInfo, ok := peer.FromContext(ctx); ok {
-		addr = peerInfo.Addr.String()
-		glog.Infof("Login request from: %s", addr)
+	if ipAddr, err := hasAdminAuth(ctx, "Login"); err != nil {
+		return nil, err
+	} else {
+		addr = ipAddr.String()
 		span.Annotate([]otrace.Attribute{
 			otrace.StringAttribute("client_ip", addr),
 		}, "client ip for login")
@@ -161,7 +165,7 @@ func validateToken(jwtStr string) ([]string, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, errors.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return worker.Config.HmacSecret, nil
+		return []byte(worker.Config.HmacSecret), nil
 	})
 
 	if err != nil {
@@ -233,7 +237,7 @@ func getAccessJwt(userId string, groups []acl.Group) (string, error) {
 		"exp": time.Now().Add(worker.Config.AccessJwtTtl).Unix(),
 	})
 
-	jwtString, err := token.SignedString(worker.Config.HmacSecret)
+	jwtString, err := token.SignedString([]byte(worker.Config.HmacSecret))
 	if err != nil {
 		return "", errors.Errorf("unable to encode jwt to string: %v", err)
 	}
@@ -248,7 +252,7 @@ func getRefreshJwt(userId string) (string, error) {
 		"exp":    time.Now().Add(worker.Config.RefreshJwtTtl).Unix(),
 	})
 
-	jwtString, err := token.SignedString(worker.Config.HmacSecret)
+	jwtString, err := token.SignedString([]byte(worker.Config.HmacSecret))
 	if err != nil {
 		return "", errors.Errorf("unable to encode jwt to string: %v", err)
 	}
@@ -344,7 +348,7 @@ func RefreshAcls(closer *y.Closer) {
 
 const queryAcls = `
 {
-  allAcls(func: type(Group)) {
+  allAcls(func: type(dgraph.type.Group)) {
     dgraph.xid
 	dgraph.acl.rule {
 		dgraph.rule.predicate
@@ -794,8 +798,76 @@ func authorizeQuery(ctx context.Context, parsedReq *gql.Result, graphql bool) er
 	return nil
 }
 
-// authorizeGuardians authorizes the operation for users which belong to Guardians group.
-func authorizeGuardians(ctx context.Context) error {
+func authorizeSchemaQuery(ctx context.Context, er *query.ExecutionResult) error {
+	if len(worker.Config.HmacSecret) == 0 {
+		// the user has not turned on the acl feature
+		return nil
+	}
+
+	// find the predicates being sent in response
+	preds := make([]string, 0)
+	predsMap := make(map[string]struct{})
+	for _, predNode := range er.SchemaNode {
+		preds = append(preds, predNode.Predicate)
+		predsMap[predNode.Predicate] = struct{}{}
+	}
+	for _, typeNode := range er.Types {
+		for _, field := range typeNode.Fields {
+			if _, ok := predsMap[field.Predicate]; !ok {
+				preds = append(preds, field.Predicate)
+			}
+		}
+	}
+
+	doAuthorizeSchemaQuery := func() (map[string]struct{}, error) {
+		userData, err := extractUserAndGroups(ctx)
+		if err != nil {
+			return nil, status.Error(codes.Unauthenticated, err.Error())
+		}
+
+		userId := userData[0]
+		groupIds := userData[1:]
+
+		if x.IsGuardian(groupIds) {
+			// Members of guardian groups are allowed to query anything.
+			return nil, nil
+		}
+
+		return authorizePreds(userId, groupIds, preds, acl.Read), nil
+	}
+
+	// find the predicates which are blocked for the schema query
+	blockedPreds, err := doAuthorizeSchemaQuery()
+	if err != nil {
+		return err
+	}
+
+	// remove those predicates from response
+	if len(blockedPreds) > 0 {
+		respPreds := make([]*pb.SchemaNode, 0)
+		for _, predNode := range er.SchemaNode {
+			if _, ok := blockedPreds[predNode.Predicate]; !ok {
+				respPreds = append(respPreds, predNode)
+			}
+		}
+		er.SchemaNode = respPreds
+
+		for _, typeNode := range er.Types {
+			respFields := make([]*pb.SchemaUpdate, 0)
+			for _, field := range typeNode.Fields {
+				if _, ok := blockedPreds[field.Predicate]; !ok {
+					respFields = append(respFields, field)
+				}
+			}
+			typeNode.Fields = respFields
+		}
+	}
+
+	return nil
+}
+
+// AuthorizeGuardians authorizes the operation for users which belong to Guardians group.
+func AuthorizeGuardians(ctx context.Context) error {
 	if len(worker.Config.HmacSecret) == 0 {
 		// the user has not turned on the acl feature
 		return nil
@@ -825,8 +897,10 @@ func authorizeGuardians(ctx context.Context) error {
 	addUserFilterToQuery applies makes sure that a user can access only its own
 	acl info by applying filter of userid and groupid to acl predicates. A query like
 	Conversion pattern:
-	* me(func: type(Group)) -> me(func: type(Group)) @filter(eq("dgraph.xid", groupIds...))
-	* me(func: type(User)) -> me(func: type(User)) @filter(eq("dgraph.xid", userId))
+		* me(func: type(dgraph.type.Group)) ->
+				me(func: type(dgraph.type.Group)) @filter(eq("dgraph.xid", groupIds...))
+		* me(func: type(dgraph.type.User)) ->
+				me(func: type(dgraph.type.User)) @filter(eq("dgraph.xid", userId))
 
 */
 func addUserFilterToQuery(gq *gql.GraphQuery, userId string, groupIds []string) {
@@ -836,12 +910,12 @@ func addUserFilterToQuery(gq *gql.GraphQuery, userId string, groupIds []string) 
 			return
 		}
 		arg := gq.Func.Args[0]
-		// The case where value of some varialble v (say) is "Group" and a
+		// The case where value of some varialble v (say) is "dgraph.type.Group" and a
 		// query comes like `eq(dgraph.type, val(v))`, will be ignored here.
-		if arg.Value == "User" {
+		if arg.Value == "dgraph.type.User" {
 			newFilter := userFilter(userId)
 			gq.Filter = parentFilter(newFilter, gq.Filter)
-		} else if arg.Value == "Group" {
+		} else if arg.Value == "dgraph.type.Group" {
 			newFilter := groupFilter(groupIds)
 			gq.Filter = parentFilter(newFilter, gq.Filter)
 		}
@@ -915,8 +989,9 @@ func groupFilter(groupIds []string) *gql.FilterTree {
 
 /*
  addUserFilterToFilter makes sure that user can't misue filters to access other user's info.
- If the *filter* have type(Group) or type(User) functions, it generate a *newFilter* with function
- like eq(dgraph.xid, userId) or eq(dgraph.xid, groupId...) and return a filter of the form
+ If the *filter* have type(dgraph.type.Group) or type(dgraph.type.User) functions,
+ it generate a *newFilter* with function like eq(dgraph.xid, userId) or eq(dgraph.xid,groupId...)
+ and return a filter of the form
 
 		&gql.FilterTree{
 			Op: "AND",
@@ -941,9 +1016,9 @@ func addUserFilterToFilter(filter *gql.FilterTree, userId string,
 		arg := filter.Func.Args[0]
 		var newFilter *gql.FilterTree
 		switch arg.Value {
-		case "User":
+		case "dgraph.type.User":
 			newFilter = userFilter(userId)
-		case "Group":
+		case "dgraph.type.Group":
 			newFilter = groupFilter(groupIds)
 		}
 

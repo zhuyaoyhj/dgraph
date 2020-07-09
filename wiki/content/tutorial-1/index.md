@@ -35,7 +35,7 @@ Ensure that [Docker](https://docs.docker.com/install/) is installed and running 
 Now, it's just a matter of running the following command, and you have Dgraph up and running.
 
 ```sh
-docker run --rm -it -p 8000:8000 -p 8080:8080 -p 9080:9080 dgraph/standalone:latest
+docker run --rm -it -p 8000:8000 -p 8080:8080 -p 9080:9080 dgraph/standalone:{{< version >}}
 ```
 
 ### Nodes and Edges
@@ -159,7 +159,7 @@ In our query, we have named it as `people`. However, you could use any other nam
 
 The `func` parameter has to be associated with a built-in function of Dgraph.
 Dgraph offers a variety of built-in functions. The `has` function is one of them.
-Check out the [query language guide](https://docs.dgraph.io/query-language) to know more about other built-in functions in Dgraph.
+Check out the [query language guide](https://dgraph.io/docs/query-language) to know more about other built-in functions in Dgraph.
 
 The inner fields of the query are similar to the column names in a SQL select statement or to a GraphQL query!
 

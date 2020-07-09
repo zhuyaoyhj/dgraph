@@ -20,19 +20,13 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"strconv"
 
 	"io"
 	"io/ioutil"
 	"mime"
-	"net"
 	"net/http"
-	"strconv"
 	"strings"
-
-	"github.com/golang/glog"
-	"github.com/graph-gophers/graphql-transport-ws/graphqlws"
-	"go.opencensus.io/trace"
-	"google.golang.org/grpc/peer"
 
 	"github.com/dgraph-io/dgraph/graphql/api"
 	"github.com/dgraph-io/dgraph/graphql/authorization"
@@ -40,10 +34,15 @@ import (
 	"github.com/dgraph-io/dgraph/graphql/schema"
 	"github.com/dgraph-io/dgraph/graphql/subscription"
 	"github.com/dgraph-io/dgraph/x"
+	"github.com/golang/glog"
+	"github.com/graph-gophers/graphql-transport-ws/graphqlws"
 	"github.com/pkg/errors"
+	"go.opencensus.io/trace"
 )
 
-// An IServeGraphQL can serve a GraphQL endpoint (currently only ons http)
+const touchedUidsHeader = "Graphql-TouchedUids"
+
+// An IServeGraphQL can serve a GraphQL endpoint (currently only on http)
 type IServeGraphQL interface {
 
 	// After ServeGQL is called, this IServeGraphQL serves the new resolvers.
@@ -89,6 +88,9 @@ func (gh *graphqlHandler) Resolve(ctx context.Context, gqlReq *schema.Request) *
 // and sends the schema response using that.
 func write(w http.ResponseWriter, rr *schema.Response, acceptGzip bool) {
 	var out io.Writer = w
+
+	// set TouchedUids header
+	w.Header().Set(touchedUidsHeader, strconv.FormatUint(rr.GetExtensions().GetTouchedUids(), 10))
 
 	// If the receiver accepts gzip, then we would update the writer
 	// and send gzipped content instead.
@@ -156,19 +158,9 @@ func (gh *graphqlHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ctx = authorization.AttachAuthorizationJwt(ctx, r)
 	ctx = x.AttachAccessJwt(ctx, r)
-
-	if ip, port, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		// Add remote addr as peer info so that the remote address can be logged
-		// inside Server.Login
-		if intPort, convErr := strconv.Atoi(port); convErr == nil {
-			ctx = peer.NewContext(ctx, &peer.Peer{
-				Addr: &net.TCPAddr{
-					IP:   net.ParseIP(ip),
-					Port: intPort,
-				},
-			})
-		}
-	}
+	// Add remote addr as peer info so that the remote address can be logged
+	// inside Server.Login
+	ctx = x.AttachRemoteIP(ctx, r)
 
 	var res *schema.Response
 	gqlReq, err := getRequest(ctx, r)

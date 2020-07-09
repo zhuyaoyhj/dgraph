@@ -8,6 +8,7 @@ schemas:
       }
       type P {
         id: ID!
+        q: A
       }
     output: |
       type A {
@@ -15,7 +16,9 @@ schemas:
       }
       A.p: uid .
       type P {
+        P.q
       }
+      P.q: uid .
 
   -
     name: "Scalar list"
@@ -54,6 +57,7 @@ schemas:
       }
       type P {
         id: ID!
+        name: String
       }
     output: |
       type X {
@@ -61,7 +65,9 @@ schemas:
       }
       X.p: [uid] .
       type P {
+        P.name
       }
+      P.name: string .
 
   -
     name: "Scalar types"
@@ -236,6 +242,49 @@ schemas:
         C.dob
       }
       C.dob: dateTime .
+
+  -
+    name: "interface using other interface generate type in dgraph"
+    input: |
+      interface A {
+        id: ID!
+        data: [D]
+      }
+      type C implements A {
+          lname: String
+      }
+      interface B {
+          name: String! @id
+          fname: String!
+      }
+      type D implements B {
+        link: A 
+        correct: Boolean!
+      }
+    output: |
+      type A {
+        A.data
+      }
+      A.data: [uid] .
+      type C {
+        A.data
+        C.lname
+      }
+      C.lname: string .
+      type B {
+        B.name
+        B.fname
+      }
+      B.name: string @index(hash) @upsert .
+      B.fname: string .
+      type D {
+        B.name
+        B.fname
+        D.link
+        D.correct
+      }
+      D.link: uid .
+      D.correct: bool .
 
   -
     name: "Schema with @dgraph directive."
@@ -437,7 +486,12 @@ schemas:
 
   - name: "remote types shouldn't be part of Dgraph schema"
     input: |
-      interface C {
+      type B {
+        id: ID!
+        q: String
+      }
+
+      interface C @remote{
         c: String
       }
 
@@ -446,21 +500,11 @@ schemas:
         p: String
         q: String
       }
-
-      type B implements C {
-        id: ID!
-        p: String
-      }
     output: |
-      type C {
-        C.c
-      }
-      C.c: string .
       type B {
-        C.c
-        B.p
+        B.q
       }
-      B.p: string .
+      B.q: string .
 
   - name: "fields with same @dgraph(pred: ...) occur only once in schema"
     input: |
@@ -516,30 +560,38 @@ schemas:
         name
       }
 
-  -
-    name: "custom types shouldn't be part of Dgraph schema"
+  - name: "fields with @dgraph(pred: ...) contain different language."
     input: |
-      interface C {
-        c: String
-      }
-
-      type A implements C @remote {
-        id: ID!
-        p: String
-        q: String
-      }
-
-      type B implements C {
-        id: ID!
-        p: String
+      type A {
+          content: String! @dgraph(pred: "post") @search(by: [exact, term])
+          author: String @dgraph(pred: "<公司>") @search(by: [exact, term])
       }
     output: |
-      type C {
-        C.c
+      type A {
+        post
+        <公司>
       }
-      C.c: string .
-      type B {
-        C.c
-        B.p
+      post: string @index(exact, term) .
+      <公司>: string @index(exact, term) .
+
+  -
+    name: "custom query and mutation shouldn't be part of Dgraph schema"
+    input: |
+      type User @remote {
+        id: ID!
+        name: String!
       }
-      B.p: string .
+
+      type Query {
+        favUsers(id: ID!, name: String!): [User] @custom(http: {
+          url: "http://mock:8888/users",
+          method: "GET"
+        })
+      }
+
+      type Mutation {
+        setFavUsers(id: ID!, name: String!): [User] @custom(http: {
+          url: "http://mock:8888/users",
+          method: "POST"
+        })
+      }

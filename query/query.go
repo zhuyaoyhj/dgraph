@@ -156,8 +156,10 @@ type params struct {
 	Recurse bool
 	// RecurseArgs stores the arguments passed to the @recurse directive.
 	RecurseArgs gql.RecurseArgs
-	// Cascade is true if the @cascade directive is specified.
-	Cascade bool
+	// Cascade is the list of predicates to apply @cascade to.
+	// __all__ is special to mean @cascade i.e. all the children of this subgraph are mandatory
+	// and should have values otherwise the node will be excluded.
+	Cascade []string
 	// IgnoreReflex is true if the @ignorereflex directive is specified.
 	IgnoreReflex bool
 
@@ -532,7 +534,6 @@ func treeCopy(gq *gql.GraphQuery, sg *SubGraph) error {
 
 		args := params{
 			Alias:        gchild.Alias,
-			Cascade:      gchild.Cascade || sg.Params.Cascade,
 			Expand:       gchild.Expand,
 			Facet:        gchild.Facets,
 			FacetsOrder:  gchild.FacetsOrder,
@@ -547,6 +548,15 @@ func treeCopy(gq *gql.GraphQuery, sg *SubGraph) error {
 			GroupbyAttrs: gchild.GroupbyAttrs,
 			IsGroupBy:    gchild.IsGroupby,
 			IsInternal:   gchild.IsInternal,
+		}
+
+		// If parent has @cascade (with or without params), inherit @cascade (with no params)
+		if len(sg.Params.Cascade) > 0 {
+			args.Cascade = append(args.Cascade, "__all__")
+		}
+		// Allow over-riding at this level.
+		if len(gchild.Cascade) > 0 {
+			args.Cascade = gchild.Cascade
 		}
 
 		if gchild.IsCount {
@@ -1296,6 +1306,13 @@ func (sg *SubGraph) populateVarMap(doneVars map[string]varValue, sgPath []*SubGr
 	if sg.DestUIDs == nil || sg.IsGroupBy() {
 		return nil
 	}
+
+	cascadeArgMap := make(map[string]bool)
+	for _, pred := range sg.Params.Cascade {
+		cascadeArgMap[pred] = true
+	}
+	cascadeAllPreds := cascadeArgMap["__all__"]
+
 	out := make([]uint64, 0, len(sg.DestUIDs.Uids))
 	if sg.Params.Alias == "shortest" {
 		goto AssignStep
@@ -1311,7 +1328,7 @@ func (sg *SubGraph) populateVarMap(doneVars map[string]varValue, sgPath []*SubGr
 			return err
 		}
 		sgPath = sgPath[:len(sgPath)-1] // Backtrack
-		if !child.Params.Cascade {
+		if len(child.Params.Cascade) == 0 {
 			continue
 		}
 
@@ -1320,7 +1337,7 @@ func (sg *SubGraph) populateVarMap(doneVars map[string]varValue, sgPath []*SubGr
 		child.updateUidMatrix()
 	}
 
-	if !sg.Params.Cascade {
+	if len(sg.Params.Cascade) == 0 {
 		goto AssignStep
 	}
 
@@ -1336,7 +1353,8 @@ func (sg *SubGraph) populateVarMap(doneVars map[string]varValue, sgPath []*SubGr
 
 			// If the length of child UID list is zero and it has no valid value, then the
 			// current UID should be removed from this level.
-			if !child.IsInternal() &&
+			if (cascadeAllPreds || cascadeArgMap[child.Attr]) &&
+				!child.IsInternal() &&
 				// Check len before accessing index.
 				(len(child.valueMatrix) <= i || len(child.valueMatrix[i].Values) == 0) &&
 				(len(child.counts) <= i) &&
@@ -1961,7 +1979,7 @@ func ProcessGraph(ctx context.Context, sg, parent *SubGraph, rch chan error) {
 				return sg.DestUIDs.Uids[i] < sg.DestUIDs.Uids[j]
 			})
 		}
-	case len(sg.Attr) == 0:
+	case sg.Attr == "":
 		// This is when we have uid function in children.
 		if sg.SrcFunc != nil && sg.SrcFunc.Name == "uid" {
 			// If its a uid() filter, we just have to intersect the SrcUIDs with DestUIDs
@@ -2010,7 +2028,7 @@ func ProcessGraph(ctx context.Context, sg, parent *SubGraph, rch chan error) {
 
 			curVal := types.Val{Tid: types.IntID, Value: int64(len(sg.DestUIDs.Uids))}
 			if types.CompareVals(sg.SrcFunc.Name, curVal, dst) {
-				sg.DestUIDs.Uids = sg.SrcUIDs.Uids
+				sg.DestUIDs.Uids = sg.SrcUIDs.GetUids()
 			} else {
 				sg.DestUIDs.Uids = nil
 			}
@@ -2024,6 +2042,8 @@ func ProcessGraph(ctx context.Context, sg, parent *SubGraph, rch chan error) {
 			switch {
 			case err != nil && strings.Contains(err.Error(), worker.ErrNonExistentTabletMessage):
 				sg.UnknownAttr = true
+				// Create an empty result because the code below depends on it.
+				result = &pb.Result{}
 			case err != nil:
 				rch <- err
 				return
@@ -2557,9 +2577,13 @@ func filterUidPredicates(ctx context.Context, preds []string) ([]string, error) 
 func UidsToHex(m map[string]uint64) map[string]string {
 	res := make(map[string]string)
 	for k, v := range m {
-		res[k] = fmt.Sprintf("%#x", v)
+		res[k] = UidToHex(v)
 	}
 	return res
+}
+
+func UidToHex(uid uint64) string {
+	return fmt.Sprintf("%#x", uid)
 }
 
 // Request wraps the state that is used when executing query.

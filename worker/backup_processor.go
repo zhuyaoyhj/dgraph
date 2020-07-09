@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"sync"
 
 	"github.com/dgraph-io/badger/v2"
 	bpb "github.com/dgraph-io/badger/v2/pb"
@@ -33,12 +34,47 @@ import (
 	"github.com/dgraph-io/dgraph/x"
 )
 
+const (
+	// backupNumGo is the number of go routines used by the backup stream writer.
+	backupNumGo = 16
+)
+
 // BackupProcessor handles the different stages of the backup process.
 type BackupProcessor struct {
 	// DB is the Badger pstore managed by this node.
 	DB *badger.DB
 	// Request stores the backup request containing the parameters for this backup.
 	Request *pb.BackupRequest
+
+	// plList is an array of pre-allocated pb.PostingList objects.
+	plList []*pb.PostingList
+	// bplList is an array of pre-allocated pb.BackupPostingList objects.
+	bplList []*pb.BackupPostingList
+	// kvPool
+	kvPool *sync.Pool
+}
+
+func NewBackupProcessor(db *badger.DB, req *pb.BackupRequest) *BackupProcessor {
+	bp := &BackupProcessor{
+		DB:      db,
+		Request: req,
+		plList:  make([]*pb.PostingList, backupNumGo),
+		bplList: make([]*pb.BackupPostingList, backupNumGo),
+		kvPool: &sync.Pool{
+			New: func() interface{} {
+				return &bpb.KV{}
+			},
+		},
+	}
+
+	for i := range bp.plList {
+		bp.plList[i] = &pb.PostingList{}
+	}
+	for i := range bp.bplList {
+		bp.bplList[i] = &pb.BackupPostingList{}
+	}
+
+	return bp
 }
 
 // LoadResult holds the output of a Load operation.
@@ -86,7 +122,7 @@ func (pr *BackupProcessor) WriteBackup(ctx context.Context) (*pb.Status, error) 
 
 	var maxVersion uint64
 
-	newhandler, err := enc.GetWriter(Config.BadgerKeyFile, handler)
+	newhandler, err := enc.GetWriter(x.WorkerConfig.EncryptionKey, handler)
 	if err != nil {
 		return &emptyRes, err
 	}
@@ -94,6 +130,7 @@ func (pr *BackupProcessor) WriteBackup(ctx context.Context) (*pb.Status, error) 
 
 	stream := pr.DB.NewStreamAt(pr.Request.ReadTs)
 	stream.LogPrefix = "Dgraph.Backup"
+	stream.NumGo = backupNumGo
 	stream.KeyToList = pr.toBackupList
 	stream.ChooseKey = func(item *badger.Item) bool {
 		parsedKey, err := x.Parse(item.Key())
@@ -123,7 +160,12 @@ func (pr *BackupProcessor) WriteBackup(ctx context.Context) (*pb.Status, error) 
 				maxVersion = kv.Version
 			}
 		}
-		return writeKVList(list, gzWriter)
+		err := writeKVList(list, gzWriter)
+
+		for _, kv := range list.Kv {
+			pr.kvPool.Put(kv)
+		}
+		return err
 	}
 
 	if err := stream.Orchestrate(context.Background()); err != nil {
@@ -187,7 +229,8 @@ func (m *Manifest) GoString() string {
 		m.Since, m.Groups, m.Encrypted)
 }
 
-func (pr *BackupProcessor) toBackupList(key []byte, itr *badger.Iterator) (*bpb.KVList, error) {
+func (pr *BackupProcessor) toBackupList(key []byte, itr *badger.Iterator) (
+	*bpb.KVList, error) {
 	list := &bpb.KVList{}
 
 	item := itr.Item()
@@ -200,6 +243,9 @@ func (pr *BackupProcessor) toBackupList(key []byte, itr *badger.Iterator) (*bpb.
 		return list, nil
 	}
 
+	kv := pr.kvPool.Get().(*bpb.KV)
+	kv.Reset()
+
 	switch item.UserMeta() {
 	case posting.BitEmptyPosting, posting.BitCompletePosting, posting.BitDeltaPosting:
 		l, err := posting.ReadPostingList(key, itr)
@@ -207,7 +253,7 @@ func (pr *BackupProcessor) toBackupList(key []byte, itr *badger.Iterator) (*bpb.
 			return nil, errors.Wrapf(err, "while reading posting list")
 		}
 
-		kv, err := l.SingleListRollup()
+		err = l.SingleListRollup(kv)
 		if err != nil {
 			return nil, errors.Wrapf(err, "while rolling up list")
 		}
@@ -218,7 +264,7 @@ func (pr *BackupProcessor) toBackupList(key []byte, itr *badger.Iterator) (*bpb.
 		}
 		kv.Key = backupKey
 
-		backupPl, err := toBackupPostingList(kv.Value)
+		backupPl, err := pr.toBackupPostingList(kv.Value, itr.ThreadId)
 		if err != nil {
 			return nil, err
 		}
@@ -235,13 +281,11 @@ func (pr *BackupProcessor) toBackupList(key []byte, itr *badger.Iterator) (*bpb.
 			return nil, err
 		}
 
-		kv := &bpb.KV{
-			Key:       backupKey,
-			Value:     valCopy,
-			UserMeta:  []byte{item.UserMeta()},
-			Version:   item.Version(),
-			ExpiresAt: item.ExpiresAt(),
-		}
+		kv.Key = backupKey
+		kv.Value = valCopy
+		kv.UserMeta = []byte{item.UserMeta()}
+		kv.Version = item.Version()
+		kv.ExpiresAt = item.ExpiresAt()
 		list.Kv = append(list.Kv, kv)
 	default:
 		return nil, errors.Errorf(
@@ -262,12 +306,18 @@ func toBackupKey(key []byte) ([]byte, error) {
 	return backupKey, nil
 }
 
-func toBackupPostingList(val []byte) ([]byte, error) {
-	pl := &pb.PostingList{}
+func (pr *BackupProcessor) toBackupPostingList(val []byte, threadNum int) ([]byte, error) {
+	pl := pr.plList[threadNum]
+	bpl := pr.bplList[threadNum]
+	pl.Reset()
+	bpl.Reset()
+
 	if err := pl.Unmarshal(val); err != nil {
 		return nil, errors.Wrapf(err, "while reading posting list")
 	}
-	backupVal, err := posting.ToBackupPostingList(pl).Marshal()
+	posting.ToBackupPostingList(pl, bpl)
+	backupVal, err := bpl.Marshal()
+
 	if err != nil {
 		return nil, errors.Wrapf(err, "while converting posting list for backup")
 	}

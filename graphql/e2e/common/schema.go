@@ -40,7 +40,9 @@ const (
             }
 		],
 		"enumValues":[]
-	} }`
+	},
+	  "__typename" : "Query"
+	}`
 
 	expectedForType = `
 	{ "__type": {
@@ -75,7 +77,7 @@ const (
             }
 		],
 		"enumValues":[]
-	} }`
+	}, "__typename" : "Query" }`
 
 	expectedForEnum = `
 	{ "__type": {
@@ -98,11 +100,11 @@ const (
             }
 		],
 		"fields":[]
-    } }`
+    }, "__typename" : "Query" }`
 )
 
 func SchemaTest(t *testing.T, expectedDgraphSchema string) {
-	d, err := grpc.Dial(alphagRPC, grpc.WithInsecure())
+	d, err := grpc.Dial(AlphagRPC, grpc.WithInsecure())
 	require.NoError(t, err)
 
 	client := dgo.NewDgraphClient(api.NewDgraphClient(d))
@@ -138,6 +140,7 @@ func graphQLDescriptions(t *testing.T) {
 				description
 			}
 		}
+		__typename
 	}`
 
 	for testName, tCase := range testCases {

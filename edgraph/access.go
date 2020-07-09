@@ -24,6 +24,7 @@ import (
 	"github.com/dgraph-io/badger/v2/y"
 	"github.com/dgraph-io/dgo/v200/protos/api"
 	"github.com/dgraph-io/dgraph/gql"
+	"github.com/dgraph-io/dgraph/query"
 	"github.com/dgraph-io/dgraph/x"
 	"github.com/golang/glog"
 )
@@ -65,7 +66,12 @@ func authorizeQuery(ctx context.Context, parsedReq *gql.Result, graphql bool) er
 	return nil
 }
 
-func authorizeGuardians(ctx context.Context) error {
+func authorizeSchemaQuery(ctx context.Context, er *query.ExecutionResult) error {
+	// always allow schema access
+	return nil
+}
+
+func AuthorizeGuardians(ctx context.Context) error {
 	// always allow access
 	return nil
 }

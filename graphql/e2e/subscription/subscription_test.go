@@ -26,23 +26,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSubscription(t *testing.T) {
-	graphQLEndpoint := "http://localhost:8180/graphql"
-	subscriptionEndpoint := "ws://localhost:8180/graphql"
-	adminEndpoint := "http://localhost:8180/admin"
-
-	sch := `
-	type Product {
+const (
+	graphQLEndpoint      = "http://localhost:8180/graphql"
+	subscriptionEndpoint = "ws://localhost:8180/graphql"
+	adminEndpoint        = "http://localhost:8180/admin"
+	sch                  = `
+	type Product @withSubscription {
 		productID: ID!
 		name: String @search(by: [term])
 		reviews: [Review] @hasInverse(field: about)
 	}
-	
-	type Customer {
+
+	type Customer  {
 		username: String! @id @search(by: [hash, regexp])
 		reviews: [Review] @hasInverse(field: by)
 	}
-	
+
 	type Review {
 		id: ID!
 		about: Product!
@@ -51,6 +50,9 @@ func TestSubscription(t *testing.T) {
 		rating: Int @search
 	}
 	`
+)
+
+func TestSubscription(t *testing.T) {
 	add := &common.GraphQLParams{
 		Query: `mutation updateGQLSchema($sch: String!) {
 			updateGQLSchema(input: { set: { schema: $sch }}) {
@@ -112,7 +114,7 @@ func TestSubscription(t *testing.T) {
 				name
 			  }
 			}
-		  }		  
+		  }
 		  `,
 	}
 	addResult = add.ExecuteAsPost(t, graphQLEndpoint)

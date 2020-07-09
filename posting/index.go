@@ -35,7 +35,6 @@ import (
 	"github.com/dgraph-io/badger/v2"
 	"github.com/dgraph-io/badger/v2/options"
 	bpb "github.com/dgraph-io/badger/v2/pb"
-	"github.com/dgraph-io/dgraph/ee/enc"
 	"github.com/dgraph-io/dgraph/protos/pb"
 	"github.com/dgraph-io/dgraph/schema"
 	"github.com/dgraph-io/dgraph/tok"
@@ -403,7 +402,7 @@ func (txn *Txn) addMutationHelper(ctx context.Context, l *List, doUpdateIndex bo
 // AddMutationWithIndex is addMutation with support for indexing. It also
 // supports reverse edges.
 func (l *List) AddMutationWithIndex(ctx context.Context, edge *pb.DirectedEdge, txn *Txn) error {
-	if len(edge.Attr) == 0 {
+	if edge.Attr == "" {
 		return errors.Errorf("Predicate cannot be empty for edge with subject: [%v], object: [%v]"+
 			" and value: [%v]", edge.Entity, edge.ValueId, edge.Value)
 	}
@@ -558,7 +557,7 @@ func (r *rebuilder) Run(ctx context.Context) error {
 		WithLogger(&x.ToGlog{}).
 		WithCompression(options.None).
 		WithLogRotatesToFlush(10).
-		WithEncryptionKey(enc.ReadEncryptionKeyFile(x.WorkerConfig.BadgerKeyFile))
+		WithEncryptionKey(x.WorkerConfig.EncryptionKey)
 	tmpDB, err := badger.OpenManaged(dbOpts)
 	if err != nil {
 		return errors.Wrap(err, "error opening temp badger for reindexing")
