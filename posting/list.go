@@ -326,6 +326,14 @@ func (l *List) updateMutationLayer(mpost *pb.Posting, singleUidUpdate bool) erro
 	l.AssertLock()
 	x.AssertTrue(mpost.Op == Set || mpost.Op == Del)
 
+	// Keys are added to the rollup batches here instead of at the point at which the
+	// transaction is committed because the transaction context does not keep track
+	// of the badger keys touched by mutations. It's useful to roll up lists even if
+	// the transaction is eventually aborted.
+	if len(l.mutationMap) > 0 {
+		IncrRollup.addKeyToBatch(l.key)
+	}
+
 	// If we have a delete all, then we replace the map entry with just one.
 	if hasDeleteAll(mpost) {
 		plist := &pb.PostingList{}
@@ -426,18 +434,65 @@ func (l *List) addMutation(ctx context.Context, txn *Txn, t *pb.DirectedEdge) er
 	return l.addMutationInternal(ctx, txn, t)
 }
 
-func (l *List) addMutationInternal(ctx context.Context, txn *Txn, t *pb.DirectedEdge) error {
-	l.AssertLock()
-
-	if txn.ShouldAbort() {
-		return zero.ErrConflict
-	}
-
+func GetConflictKey(pk x.ParsedKey, key []byte, t *pb.DirectedEdge) uint64 {
 	getKey := func(key []byte, uid uint64) uint64 {
 		// Instead of creating a string first and then doing a fingerprint, let's do a fingerprint
 		// here to save memory allocations.
 		// Not entirely sure about effect on collision chances due to this simple XOR with uid.
 		return farm.Fingerprint64(key) ^ uid
+	}
+
+	var conflictKey uint64
+	switch {
+	case schema.State().HasNoConflict(t.Attr):
+		break
+	case schema.State().HasUpsert(t.Attr):
+		// Consider checking to see if a email id is unique. A user adds:
+		// <uid> <email> "email@email.org", and there's a string equal tokenizer
+		// and upsert directive on the schema.
+		// Then keys are "<email> <uid>" and "<email> email@email.org"
+		// The first key won't conflict, because two different UIDs can try to
+		// get the same email id. But, the second key would. Thus, we ensure
+		// that two users don't set the same email id.
+		conflictKey = getKey(key, 0)
+
+	case pk.IsData() && schema.State().IsList(t.Attr):
+		// Data keys, irrespective of whether they are UID or values, should be judged based on
+		// whether they are lists or not. For UID, t.ValueId = UID. For value, t.ValueId =
+		// fingerprint(value) or could be fingerprint(lang) or something else.
+		//
+		// For singular uid predicate, like partner: uid // no list.
+		// a -> b
+		// a -> c
+		// Run concurrently, only one of them should succeed.
+		// But for friend: [uid], both should succeed.
+		//
+		// Similarly, name: string
+		// a -> "x"
+		// a -> "y"
+		// This should definitely have a conflict.
+		// But, if name: [string], then they can both succeed.
+		conflictKey = getKey(key, t.ValueId)
+
+	case pk.IsData(): // NOT a list. This case must happen after the above case.
+		conflictKey = getKey(key, 0)
+
+	case pk.IsIndex() || pk.IsCountOrCountRev():
+		// Index keys are by default of type [uid].
+		conflictKey = getKey(key, t.ValueId)
+
+	default:
+		// Don't assign a conflictKey.
+	}
+
+	return conflictKey
+}
+
+func (l *List) addMutationInternal(ctx context.Context, txn *Txn, t *pb.DirectedEdge) error {
+	l.AssertLock()
+
+	if txn.ShouldAbort() {
+		return zero.ErrConflict
 	}
 
 	mpost := NewPosting(t)
@@ -470,57 +525,18 @@ func (l *List) addMutationInternal(ctx context.Context, txn *Txn, t *pb.Directed
 	// We ensure that commit marks are applied to posting lists in the right
 	// order. We can do so by proposing them in the same order as received by the Oracle delta
 	// stream from Zero, instead of in goroutines.
-	var conflictKey uint64
-	switch {
-	case schema.State().HasNoConflict(t.Attr):
-		break
-	case schema.State().HasUpsert(t.Attr):
-		// Consider checking to see if a email id is unique. A user adds:
-		// <uid> <email> "email@email.org", and there's a string equal tokenizer
-		// and upsert directive on the schema.
-		// Then keys are "<email> <uid>" and "<email> email@email.org"
-		// The first key won't conflict, because two different UIDs can try to
-		// get the same email id. But, the second key would. Thus, we ensure
-		// that two users don't set the same email id.
-		conflictKey = getKey(l.key, 0)
-
-	case pk.IsData() && schema.State().IsList(t.Attr):
-		// Data keys, irrespective of whether they are UID or values, should be judged based on
-		// whether they are lists or not. For UID, t.ValueId = UID. For value, t.ValueId =
-		// fingerprint(value) or could be fingerprint(lang) or something else.
-		//
-		// For singular uid predicate, like partner: uid // no list.
-		// a -> b
-		// a -> c
-		// Run concurrently, only one of them should succeed.
-		// But for friend: [uid], both should succeed.
-		//
-		// Similarly, name: string
-		// a -> "x"
-		// a -> "y"
-		// This should definitely have a conflict.
-		// But, if name: [string], then they can both succeed.
-		conflictKey = getKey(l.key, t.ValueId)
-
-	case pk.IsData(): // NOT a list. This case must happen after the above case.
-		conflictKey = getKey(l.key, 0)
-
-	case pk.IsIndex() || pk.IsCountOrCountRev():
-		// Index keys are by default of type [uid].
-		conflictKey = getKey(l.key, t.ValueId)
-
-	default:
-		// Don't assign a conflictKey.
-	}
-	txn.addConflictKey(conflictKey)
+	txn.addConflictKey(GetConflictKey(pk, l.key, t))
 	return nil
 }
 
 // getMutation returns a marshaled version of posting list mutation stored internally.
 func (l *List) getMutation(startTs uint64) []byte {
-	l.RLock()
-	defer l.RUnlock()
+	l.Lock()
+	defer l.Unlock()
 	if pl, ok := l.mutationMap[startTs]; ok {
+		for _, p := range pl.GetPostings() {
+			p.StartTs = 0
+		}
 		data, err := pl.Marshal()
 		x.Check(err)
 		return data
@@ -588,6 +604,7 @@ func (l *List) pickPostings(readTs uint64) (uint64, []*pb.Posting) {
 					deleteBelowTs = effectiveTs
 					continue
 				}
+				mpost.StartTs = startTs
 				posts = append(posts, mpost)
 			}
 		}
@@ -728,6 +745,26 @@ func (l *List) IsEmpty(readTs, afterUid uint64) (bool, error) {
 		return false, errors.Wrapf(err, "cannot iterate over list when calling List.IsEmpty")
 	}
 	return count == 0, nil
+}
+
+func (l *List) getPostingAndLength(readTs, afterUid, uid uint64) (int, bool, *pb.Posting) {
+	l.AssertRLock()
+	var count int
+	var found bool
+	var post *pb.Posting
+	err := l.iterate(readTs, afterUid, func(p *pb.Posting) error {
+		if p.Uid == uid {
+			post = p
+			found = true
+		}
+		count++
+		return nil
+	})
+	if err != nil {
+		return -1, false, nil
+	}
+
+	return count, found, post
 }
 
 func (l *List) length(readTs, afterUid uint64) int {
@@ -871,25 +908,7 @@ type rollupOutput struct {
 	newMinTs uint64
 }
 
-// Merge all entries in mutation layer with commitTs <= l.commitTs into
-// immutable layer. Note that readTs can be math.MaxUint64, so do NOT use it
-// directly. It should only serve as the read timestamp for iteration.
-func (l *List) rollup(readTs uint64, split bool) (*rollupOutput, error) {
-	l.AssertRLock()
-
-	// Pick all committed entries
-	if l.minTs > readTs {
-		// If we are already past the readTs, then skip the rollup.
-		return nil, nil
-	}
-
-	out := &rollupOutput{
-		plist: &pb.PostingList{
-			Splits: l.plist.Splits,
-		},
-		parts: make(map[uint64]*pb.PostingList),
-	}
-
+func (l *List) encode(out *rollupOutput, readTs uint64, split bool) error {
 	var plist *pb.PostingList
 	var startUid, endUid uint64
 	var splitIdx int
@@ -936,18 +955,47 @@ func (l *List) rollup(readTs uint64, split bool) (*rollupOutput, error) {
 	})
 	// Finish  writing the last part of the list (or the whole list if not a multi-part list).
 	if err != nil {
-		return nil, errors.Wrapf(err, "cannot iterate through the list")
+		return errors.Wrapf(err, "cannot iterate through the list")
 	}
 	plist.Pack = enc.Done()
 	if plist.Pack != nil {
 		if plist.Pack.BlockSize != uint32(blockSize) {
-			return nil, errors.Errorf("actual block size %d is different from expected value %d",
+			return errors.Errorf("actual block size %d is different from expected value %d",
 				plist.Pack.BlockSize, blockSize)
 		}
 	}
-
-	if len(l.plist.Splits) > 0 {
+	if split && len(l.plist.Splits) > 0 {
 		out.parts[startUid] = plist
+	}
+	return nil
+}
+
+// Merge all entries in mutation layer with commitTs <= l.commitTs into
+// immutable layer. Note that readTs can be math.MaxUint64, so do NOT use it
+// directly. It should only serve as the read timestamp for iteration.
+func (l *List) rollup(readTs uint64, split bool) (*rollupOutput, error) {
+	l.AssertRLock()
+
+	// Pick all committed entries
+	if l.minTs > readTs {
+		// If we are already past the readTs, then skip the rollup.
+		return nil, nil
+	}
+
+	out := &rollupOutput{
+		plist: &pb.PostingList{
+			Splits: l.plist.Splits,
+		},
+		parts: make(map[uint64]*pb.PostingList),
+	}
+
+	if len(out.plist.Splits) > 0 || len(l.mutationMap) > 0 {
+		if err := l.encode(out, readTs, split); err != nil {
+			return nil, errors.Wrapf(err, "while encoding")
+		}
+	} else {
+		// We already have a nicely packed posting list. Just use it.
+		out.plist = l.plist
 	}
 
 	maxCommitTs := l.minTs
@@ -1321,6 +1369,13 @@ func shouldSplit(plist *pb.PostingList) bool {
 	return plist.Size() >= maxListSize && len(plist.Pack.Blocks) > 1
 }
 
+func (out *rollupOutput) updateSplits() {
+	if out.plist == nil || len(out.parts) > 0 {
+		out.plist = &pb.PostingList{}
+	}
+	out.plist.Splits = out.splits()
+}
+
 func (out *rollupOutput) recursiveSplit() {
 	// Call splitUpList. Otherwise the map of startUids to parts won't be initialized.
 	out.splitUpList()
@@ -1347,7 +1402,7 @@ func (out *rollupOutput) splitUpList() {
 	var lists []*pb.PostingList
 
 	// If list is not split yet, insert the main list.
-	if len(out.plist.Splits) == 0 {
+	if len(out.parts) == 0 {
 		lists = append(lists, out.plist)
 	}
 
@@ -1357,13 +1412,10 @@ func (out *rollupOutput) splitUpList() {
 		lists = append(lists, part)
 	}
 
-	// List of startUids for each list part after the splitting process is complete.
-	var newSplits []uint64
-
 	for i, list := range lists {
 		startUid := uint64(1)
 		// If the list is split, select the right startUid for this list.
-		if len(out.plist.Splits) > 0 {
+		if len(out.parts) > 0 {
 			startUid = out.plist.Splits[i]
 		}
 
@@ -1373,23 +1425,11 @@ func (out *rollupOutput) splitUpList() {
 			startUids, pls := binSplit(startUid, list)
 			for i, startUid := range startUids {
 				out.parts[startUid] = pls[i]
-				newSplits = append(newSplits, startUid)
 			}
-		} else {
-			// No need to split the list. Add the startUid to the array of new splits.
-			newSplits = append(newSplits, startUid)
 		}
 	}
 
-	// No new lists were created so there's no need to update the list of splits.
-	if len(newSplits) == len(lists) {
-		return
-	}
-
-	// The splits changed so update them.
-	out.plist = &pb.PostingList{
-		Splits: newSplits,
-	}
+	out.updateSplits()
 }
 
 // binSplit takes the given plist and returns two new plists, each with
@@ -1414,41 +1454,37 @@ func binSplit(lowUid uint64, plist *pb.PostingList) ([]uint64, []*pb.PostingList
 	}
 
 	// Add elements in plist.Postings to the corresponding list.
-	for _, posting := range plist.Postings {
-		if posting.Uid < midUid {
-			lowPl.Postings = append(lowPl.Postings, posting)
-		} else {
-			highPl.Postings = append(highPl.Postings, posting)
-		}
-	}
+	pidx := sort.Search(len(plist.Postings), func(idx int) bool {
+		return plist.Postings[idx].Uid >= midUid
+	})
+	lowPl.Postings = plist.Postings[:pidx]
+	highPl.Postings = plist.Postings[pidx:]
 
 	return []uint64{lowUid, midUid}, []*pb.PostingList{lowPl, highPl}
 }
 
 // removeEmptySplits updates the split list by removing empty posting lists' startUids.
 func (out *rollupOutput) removeEmptySplits() {
-	var splits []uint64
 	for startUid, plist := range out.parts {
 		// Do not remove the first split for now, as every multi-part list should always
 		// have a split starting with UID 1.
 		if startUid == 1 {
-			splits = append(splits, startUid)
 			continue
 		}
 
-		if !isPlistEmpty(plist) {
-			splits = append(splits, startUid)
+		if isPlistEmpty(plist) {
+			delete(out.parts, startUid)
 		}
 	}
-	out.plist.Splits = splits
-	sortSplits(splits)
+	out.updateSplits()
 
-	if len(out.plist.Splits) == 1 {
+	if len(out.parts) == 1 && isPlistEmpty(out.parts[1]) {
 		// Only the first split remains. If it's also empty, remove it as well.
 		// This should mark the entire list for deletion. Please note that the
 		// startUid of the first part is always one because a node can never have
 		// its uid set to zero.
 		if isPlistEmpty(out.parts[1]) {
+			delete(out.parts, 1)
 			out.plist.Splits = []uint64{}
 		}
 	}

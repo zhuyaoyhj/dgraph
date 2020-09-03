@@ -21,7 +21,9 @@ import (
 	"io/ioutil"
 	"os"
 	"os/user"
+	"strings"
 
+	sv "github.com/Masterminds/semver/v3"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -198,17 +200,36 @@ func getAlpha(idx int) service {
 	basename := "alpha"
 	internalPort := alphaBasePort + opts.PortOffset + getOffset(idx)
 	grpcPort := internalPort + 1000
-
 	svc := initService(basename, idx, grpcPort)
 
 	if opts.TmpFS {
 		svc.TmpFS = append(svc.TmpFS, fmt.Sprintf("/data/%s/w", svc.name))
 	}
 
+	isMultiZeros := true
+	var isInvalidVersion, err = semverCompare("< 1.2.3 || 20.03.0", opts.Tag)
+	if err != nil || isInvalidVersion {
+		isMultiZeros = false
+	}
+
+	maxZeros := 1
+	if isMultiZeros {
+		maxZeros = opts.NumZeros
+	}
+
+	zeroHostAddr := fmt.Sprintf("zero%d:%d", 1, zeroBasePort+opts.PortOffset)
+	zeros := []string{zeroHostAddr}
+	for i := 2; i <= maxZeros; i++ {
+		zeroHostAddr = fmt.Sprintf("zero%d:%d", i, zeroBasePort+opts.PortOffset+i)
+		zeros = append(zeros, zeroHostAddr)
+	}
+
+	zerosOpt := strings.Join(zeros, ",")
+
 	svc.Command += fmt.Sprintf(" -o %d", opts.PortOffset+getOffset(idx))
 	svc.Command += fmt.Sprintf(" --my=%s:%d", svc.name, internalPort)
 	svc.Command += fmt.Sprintf(" --lru_mb=%d", opts.LruSizeMB)
-	svc.Command += fmt.Sprintf(" --zero=zero1:%d", zeroBasePort+opts.PortOffset)
+	svc.Command += fmt.Sprintf(" --zero=%s", zerosOpt)
 	svc.Command += fmt.Sprintf(" --logtostderr -v=%d", opts.Verbosity)
 	svc.Command += fmt.Sprintf(" --idx=%d", idx)
 	if opts.WhiteList {
@@ -229,7 +250,7 @@ func getAlpha(idx int) service {
 
 func getJaeger() service {
 	svc := service{
-		Image:         "jaegertracing/all-in-one:latest",
+		Image:         "jaegertracing/all-in-one:1.18",
 		ContainerName: "jaeger",
 		WorkingDir:    "/working/jaeger",
 		Ports: []string{
@@ -267,7 +288,7 @@ func addMetrics(cfg *composeConfig) {
 	cfg.Volumes["grafana-volume"] = stringMap{}
 
 	cfg.Services["node-exporter"] = service{
-		Image:         "quay.io/prometheus/node-exporter",
+		Image:         "quay.io/prometheus/node-exporter:v1.0.1",
 		ContainerName: "node-exporter",
 		Pid:           "host",
 		WorkingDir:    "/working/jaeger",
@@ -280,7 +301,7 @@ func addMetrics(cfg *composeConfig) {
 	}
 
 	cfg.Services["prometheus"] = service{
-		Image:         "prom/prometheus",
+		Image:         "prom/prometheus:v2.20.1",
 		ContainerName: "prometheus",
 		Hostname:      "prometheus",
 		Ports: []string{
@@ -302,7 +323,7 @@ func addMetrics(cfg *composeConfig) {
 	}
 
 	cfg.Services["grafana"] = service{
-		Image:         "grafana/grafana",
+		Image:         "grafana/grafana:7.1.2",
 		ContainerName: "grafana",
 		Hostname:      "grafana",
 		Ports: []string{
@@ -319,6 +340,20 @@ func addMetrics(cfg *composeConfig) {
 			Target: "/var/lib/grafana",
 		}},
 	}
+}
+
+func semverCompare(constraint, version string) (bool, error) {
+	c, err := sv.NewConstraint(constraint)
+	if err != nil {
+		return false, err
+	}
+
+	v, err := sv.NewVersion(version)
+	if err != nil {
+		return false, err
+	}
+
+	return c.Check(v), nil
 }
 
 func fatal(err error) {

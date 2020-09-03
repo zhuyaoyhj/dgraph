@@ -34,14 +34,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dgraph-io/dgraph/graphql/web"
-
+	badgerpb "github.com/dgraph-io/badger/v2/pb"
 	"github.com/dgraph-io/badger/v2/y"
 	"github.com/dgraph-io/dgo/v200/protos/api"
 	"github.com/dgraph-io/dgraph/edgraph"
 	"github.com/dgraph-io/dgraph/ee/enc"
 	"github.com/dgraph-io/dgraph/graphql/admin"
+	"github.com/dgraph-io/dgraph/graphql/web"
 	"github.com/dgraph-io/dgraph/posting"
+	"github.com/dgraph-io/dgraph/protos/pb"
 	"github.com/dgraph-io/dgraph/schema"
 	"github.com/dgraph-io/dgraph/tok"
 	"github.com/dgraph-io/dgraph/worker"
@@ -104,13 +105,17 @@ they form a Raft group and provide synchronous replication.
 	flag.StringP("postings", "p", "p", "Directory to store posting lists.")
 
 	// Options around how to set up Badger.
-	flag.String("badger.tables", "mmap",
-		"[ram, mmap, disk] Specifies how Badger LSM tree is stored. "+
-			"Option sequence consume most to least RAM while providing best to worst read "+
-			"performance respectively.")
-	flag.String("badger.vlog", "mmap",
-		"[mmap, disk] Specifies how Badger Value log is stored."+
-			" mmap consumes more RAM, but provides better performance.")
+	flag.String("badger.tables", "mmap,mmap",
+		"[ram, mmap, disk] Specifies how Badger LSM tree is stored for the postings and "+
+			"write-ahead directory. Option sequence consume most to least RAM while providing "+
+			"best to worst read performance respectively. If you pass two values separated by a "+
+			"comma, the first value will be used for the postings directory and the second for "+
+			"the write-ahead log directory.")
+	flag.String("badger.vlog", "mmap,mmap",
+		"[mmap, disk] Specifies how Badger Value log is stored for the postings and write-ahead "+
+			"log directory. mmap consumes more RAM, but provides better performance. If you pass "+
+			"two values separated by a comma the first value will be used for the postings "+
+			"directory and the second for the w directory.")
 	flag.Int("badger.compression_level", 3,
 		"The compression level for Badger. A higher value uses more resources.")
 	enc.RegisterFlags(flag)
@@ -134,8 +139,9 @@ they form a Raft group and provide synchronous replication.
 
 	flag.StringP("wal", "w", "w", "Directory to store raft write-ahead logs.")
 	flag.String("whitelist", "",
-		"A comma separated list of IP ranges you wish to whitelist for performing admin "+
-			"actions (i.e., --whitelist 127.0.0.1:127.0.0.3,0.0.0.7:0.0.0.9)")
+		"A comma separated list of IP addresses, IP ranges, CIDR blocks, or hostnames you "+
+			"wish to whitelist for performing admin actions (i.e., --whitelist 144.142.126.254,"+
+			"127.0.0.1:127.0.0.3,192.168.0.0/16,host.docker.internal)")
 	flag.String("export", "export", "Folder in which to store exports.")
 	flag.Int("pending_proposals", 256,
 		"Number of pending mutation proposals. Useful for rate limiting.")
@@ -194,9 +200,17 @@ they form a Raft group and provide synchronous replication.
 	grpc.EnableTracing = false
 
 	flag.Bool("graphql_introspection", true, "Set to false for no GraphQL schema introspection")
+	flag.Bool("graphql_debug", false, "Enable debug mode in GraphQL. This returns auth errors to clients. We do not recommend turning it on for production.")
 	flag.Bool("ludicrous_mode", false, "Run alpha in ludicrous mode")
+	flag.Int("ludicrous_concurrency", 2000, "Number of concurrent threads in ludicrous mode")
 	flag.Bool("graphql_extensions", true, "Set to false if extensions not required in GraphQL response body")
 	flag.Duration("graphql_poll_interval", time.Second, "polling interval for graphql subscription.")
+
+	// Cache flags
+	flag.Int64("cache_mb", 0, "Total size of cache (in MB) to be used in alpha.")
+	flag.String("cache_percentage", "0,65,25,0,10",
+		`Cache percentages summing up to 100 for various caches (FORMAT:
+		PostingListCache,PstoreBlockCache,PstoreIndexCache,WstoreBlockCache,WstoreIndexCache).`)
 }
 
 func setupCustomTokenizers() {
@@ -470,7 +484,10 @@ func setupServer(closer *y.Closer) {
 	// The global epoch is set to maxUint64 while exiting the server.
 	// By using this information polling goroutine terminates the subscription.
 	globalEpoch := uint64(0)
-	mainServer, adminServer, gqlHealthStore := admin.NewServers(introspection, &globalEpoch, closer)
+	var mainServer web.IServeGraphQL
+	var gqlHealthStore *admin.GraphQLHealthStore
+	// Do not use := notation here because adminServer is a global variable.
+	mainServer, adminServer, gqlHealthStore = admin.NewServers(introspection, &globalEpoch, closer)
 	http.Handle("/graphql", mainServer.HTTPHandler())
 	http.HandleFunc("/probe/graphql", func(w http.ResponseWriter, r *http.Request) {
 		healthStatus := gqlHealthStore.GetHealth()
@@ -492,6 +509,23 @@ func setupServer(closer *y.Closer) {
 		r *http.Request) {
 		adminSchemaHandler(w, r, adminServer)
 	})))
+
+	http.Handle("/admin/schema/validate", http.HandlerFunc(func(w http.ResponseWriter,
+		r *http.Request) {
+		schema := readRequest(w, r)
+		w.Header().Set("Content-Type", "application/json")
+
+		err := admin.SchemaValidate(string(schema))
+		if err == nil {
+			w.WriteHeader(http.StatusOK)
+			x.SetStatus(w, "success", "Schema is valid")
+			return
+		}
+
+		w.WriteHeader(http.StatusBadRequest)
+		errs := strings.Split(strings.TrimSpace(err.Error()), "\n")
+		x.SetStatusWithErrors(w, x.ErrorInvalidRequest, errs)
+	}))
 
 	http.Handle("/admin/shutdown", allowedMethodsHandler(allowedMethods{http.MethodGet: true},
 		adminAuthHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -568,16 +602,56 @@ func run() {
 	}
 	bindall = Alpha.Conf.GetBool("bindall")
 
+	totalCache := int64(Alpha.Conf.GetInt("cache_mb"))
+	x.AssertTruef(totalCache >= 0, "ERROR: Cache size must be non-negative")
+
+	cachePercentage := Alpha.Conf.GetString("cache_percentage")
+	cachePercent, err := x.GetCachePercentages(cachePercentage, 5)
+	x.Check(err)
+	postingListCacheSize := (cachePercent[0] * (totalCache << 20)) / 100
+	pstoreBlockCacheSize := (cachePercent[1] * (totalCache << 20)) / 100
+	pstoreIndexCacheSize := (cachePercent[2] * (totalCache << 20)) / 100
+	wstoreBlockCacheSize := (cachePercent[3] * (totalCache << 20)) / 100
+	wstoreIndexCacheSize := (cachePercent[4] * (totalCache << 20)) / 100
+
 	opts := worker.Options{
-		BadgerTables:           Alpha.Conf.GetString("badger.tables"),
-		BadgerVlog:             Alpha.Conf.GetString("badger.vlog"),
 		BadgerCompressionLevel: Alpha.Conf.GetInt("badger.compression_level"),
 		PostingDir:             Alpha.Conf.GetString("postings"),
 		WALDir:                 Alpha.Conf.GetString("wal"),
+		PBlockCacheSize:        pstoreBlockCacheSize,
+		PIndexCacheSize:        pstoreIndexCacheSize,
+		WBlockCacheSize:        wstoreBlockCacheSize,
+		WIndexCacheSize:        wstoreIndexCacheSize,
 
 		MutationsMode:  worker.AllowMutations,
 		AuthToken:      Alpha.Conf.GetString("auth_token"),
 		AllottedMemory: Alpha.Conf.GetFloat64("lru_mb"),
+	}
+
+	badgerTables := strings.Split(Alpha.Conf.GetString("badger.tables"), ",")
+	if len(badgerTables) != 1 && len(badgerTables) != 2 {
+		glog.Fatalf("Unable to read badger.tables options. Expected single value or two "+
+			"comma-separated values. Got %s", Alpha.Conf.GetString("badger.tables"))
+	}
+	if len(badgerTables) == 1 {
+		opts.BadgerTables = badgerTables[0]
+		opts.BadgerWalTables = badgerTables[0]
+	} else {
+		opts.BadgerTables = badgerTables[0]
+		opts.BadgerWalTables = badgerTables[1]
+	}
+
+	badgerVlog := strings.Split(Alpha.Conf.GetString("badger.vlog"), ",")
+	if len(badgerVlog) != 1 && len(badgerVlog) != 2 {
+		glog.Fatalf("Unable to read badger.vlog options. Expected single value or two "+
+			"comma-separated values. Got %s", Alpha.Conf.GetString("badger.vlog"))
+	}
+	if len(badgerVlog) == 1 {
+		opts.BadgerVlog = badgerVlog[0]
+		opts.BadgerWalVlog = badgerVlog[0]
+	} else {
+		opts.BadgerVlog = badgerVlog[0]
+		opts.BadgerWalVlog = badgerVlog[1]
 	}
 
 	secretFile := Alpha.Conf.GetString("acl_secret_file")
@@ -619,20 +693,21 @@ func run() {
 	x.Check(err)
 
 	x.WorkerConfig = x.WorkerOptions{
-		ExportPath:          Alpha.Conf.GetString("export"),
-		NumPendingProposals: Alpha.Conf.GetInt("pending_proposals"),
-		Tracing:             Alpha.Conf.GetFloat64("trace"),
-		MyAddr:              Alpha.Conf.GetString("my"),
-		ZeroAddr:            strings.Split(Alpha.Conf.GetString("zero"), ","),
-		RaftId:              cast.ToUint64(Alpha.Conf.GetString("idx")),
-		WhiteListedIPRanges: ips,
-		MaxRetries:          Alpha.Conf.GetInt("max_retries"),
-		StrictMutations:     opts.MutationsMode == worker.StrictMutations,
-		AclEnabled:          secretFile != "",
-		SnapshotAfter:       Alpha.Conf.GetInt("snapshot_after"),
-		AbortOlderThan:      abortDur,
-		StartTime:           startTime,
-		LudicrousMode:       Alpha.Conf.GetBool("ludicrous_mode"),
+		ExportPath:           Alpha.Conf.GetString("export"),
+		NumPendingProposals:  Alpha.Conf.GetInt("pending_proposals"),
+		Tracing:              Alpha.Conf.GetFloat64("trace"),
+		MyAddr:               Alpha.Conf.GetString("my"),
+		ZeroAddr:             strings.Split(Alpha.Conf.GetString("zero"), ","),
+		RaftId:               cast.ToUint64(Alpha.Conf.GetString("idx")),
+		WhiteListedIPRanges:  ips,
+		MaxRetries:           Alpha.Conf.GetInt("max_retries"),
+		StrictMutations:      opts.MutationsMode == worker.StrictMutations,
+		AclEnabled:           secretFile != "",
+		SnapshotAfter:        Alpha.Conf.GetInt("snapshot_after"),
+		AbortOlderThan:       abortDur,
+		StartTime:            startTime,
+		LudicrousMode:        Alpha.Conf.GetBool("ludicrous_mode"),
+		LudicrousConcurrency: Alpha.Conf.GetInt("ludicrous_concurrency"),
 	}
 	if x.WorkerConfig.EncryptionKey, err = enc.ReadKey(Alpha.Conf); err != nil {
 		glog.Infof("unable to read key %v", err)
@@ -646,6 +721,7 @@ func run() {
 	x.Config.NormalizeNodeLimit = cast.ToInt(Alpha.Conf.GetString("normalize_node_limit"))
 	x.Config.PollInterval = Alpha.Conf.GetDuration("graphql_poll_interval")
 	x.Config.GraphqlExtension = Alpha.Conf.GetBool("graphql_extensions")
+	x.Config.GraphqlDebug = Alpha.Conf.GetBool("graphql_debug")
 
 	x.PrintVersion()
 	glog.Infof("x.Config: %+v", x.Config)
@@ -668,7 +744,7 @@ func run() {
 	// Posting will initialize index which requires schema. Hence, initialize
 	// schema before calling posting.Init().
 	schema.Init(worker.State.Pstore)
-	posting.Init(worker.State.Pstore)
+	posting.Init(worker.State.Pstore, postingListCacheSize)
 	defer posting.Cleanup()
 	worker.Init(worker.State.Pstore)
 
@@ -698,15 +774,27 @@ func run() {
 		}
 	}()
 
-	// Setup external communication.
-	aclCloser := y.NewCloser(1)
+	updaters := y.NewCloser(4)
 	go func() {
 		worker.StartRaftNodes(worker.State.WALstore, bindall)
 		// initialization of the admin account can only be done after raft nodes are running
 		// and health check passes
-		edgraph.ResetAcl()
-		edgraph.RefreshAcls(aclCloser)
+		edgraph.ResetAcl(updaters)
+		edgraph.RefreshAcls(updaters)
+		edgraph.ResetCors(updaters)
+		// Update the accepted cors origins.
+		for updaters.Ctx().Err() == nil {
+			origins, err := edgraph.GetCorsOrigins(updaters.Ctx())
+			if err != nil {
+				glog.Errorf("Error while retriving cors origins: %s", err.Error())
+				continue
+			}
+			x.UpdateCorsOrigins(origins)
+			return
+		}
 	}()
+	// Listen for any new cors origin update.
+	go listenForCorsUpdate(updaters)
 
 	// Graphql subscribes to alpha to get schema updates. We need to close that before we
 	// close alpha. This closer is for closing and waiting that subscription.
@@ -714,11 +802,61 @@ func run() {
 
 	setupServer(adminCloser)
 	glog.Infoln("GRPC and HTTP stopped.")
-	aclCloser.SignalAndWait()
+
+	// This might not close until group is given the signal to close. So, only signal here,
+	// wait for it after group is closed.
+	updaters.Signal()
+
 	worker.BlockingStop()
+	glog.Infoln("worker stopped.")
+
 	adminCloser.SignalAndWait()
-	glog.Info("Disposing server state.")
+	glog.Infoln("adminCloser closed.")
+
 	worker.State.Dispose()
 	x.RemoveCidFile()
+	glog.Info("worker.State disposed.")
+
+	updaters.Wait()
+	glog.Infoln("updaters closed.")
+
 	glog.Infoln("Server shutdown. Bye!")
+}
+
+// listenForCorsUpdate listen for any cors change and update the accepeted cors.
+func listenForCorsUpdate(closer *y.Closer) {
+	prefix := x.DataKey("dgraph.cors", 0)
+	// Remove uid from the key, to get the correct prefix
+	prefix = prefix[:len(prefix)-8]
+	worker.SubscribeForUpdates([][]byte{prefix}, func(kvs *badgerpb.KVList) {
+		// Last update contains the latest value. So, taking the last update.
+		lastIdx := len(kvs.GetKv()) - 1
+		kv := kvs.GetKv()[lastIdx]
+		glog.Infof("Updating cors from subscription.")
+		// Unmarshal the incoming posting list.
+		pl := &pb.PostingList{}
+		err := pl.Unmarshal(kv.GetValue())
+		if err != nil {
+			glog.Errorf("Unable to unmarshal the posting list for cors update %s", err)
+			return
+		}
+		// Skip if there is no posting. Our all upsert call contains atleast one
+		// posting.
+		if len(pl.Postings) == 0 {
+			return
+		}
+		origins := make([]string, 0)
+		for _, posting := range pl.Postings {
+			val := strings.TrimSpace(string(posting.Value))
+			if val == "_STAR_ALL" {
+				// If the posting list contains __STAR_ALL then it's a delete call.
+				// we usually do it before updating as part of upsert. So, let's
+				// ignore this update.
+				continue
+			}
+			origins = append(origins, val)
+		}
+		glog.Infof("Updating cors origins: %+v", origins)
+		x.UpdateCorsOrigins(origins)
+	}, 1, closer)
 }

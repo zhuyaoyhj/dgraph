@@ -43,8 +43,7 @@ const (
 	errNoGraphQLSchema = "Not resolving %s. There's no GraphQL schema in Dgraph.  " +
 		"Use the /admin API to add a GraphQL schema"
 	errResolverNotFound = "%s was not executed because no suitable resolver could be found - " +
-		"this indicates a resolver or validation bug " +
-		"(Please let us know : https://github.com/dgraph-io/dgraph/issues)"
+		"this indicates a resolver or validation bug. Please let us know by filing an issue."
 
 	// GraphQL schema for /admin endpoint.
 	graphqlAdminSchema = `
@@ -64,6 +63,10 @@ const (
 		This is the schema that is being served by Dgraph at /graphql.
 		"""
 		generatedSchema: String!
+	}
+
+	type Cors @dgraph(type: "dgraph.cors"){
+		acceptedOrigins: [String]
 	}
 
 	"""
@@ -190,6 +193,31 @@ const (
 
 	input ExportInput {
 		format: String
+
+		"""
+		Destination for the backup: e.g. Minio or S3 bucket or /absolute/path
+		"""
+		destination: String
+
+		"""
+		Access key credential for the destination.
+		"""
+		accessKey: String
+
+		"""
+		Secret key credential for the destination.
+		"""
+		secretKey: String
+
+		"""
+		AWS session token, if required.
+		"""
+		sessionToken: String
+
+		"""
+		Set to true to allow backing up to S3 or Minio bucket that requires no credentials.
+		"""
+		anonymous: Boolean
 	}
 
 	type Response {
@@ -199,6 +227,7 @@ const (
 
 	type ExportPayload {
 		response: Response
+		exportedFiles: [String]
 	}
 
 	type DrainingPayload {
@@ -239,6 +268,7 @@ const (
 		health: [NodeState]
 		state: MembershipState
 		config: Config
+		getAllowedCORSOrigins: Cors
 
 		` + adminQueries + `
 	}
@@ -272,6 +302,8 @@ const (
 		Alter the node's config.
 		"""
 		config(input: ConfigInput!): ConfigPayload
+		
+		replaceAllowedCORSOrigins(origins: [String]): Cors
 
 		` + adminMutations + `
 	}
@@ -327,6 +359,16 @@ var (
 	// mainHealthStore stores the health of the main GraphQL server.
 	mainHealthStore = &GraphQLHealthStore{}
 )
+
+func SchemaValidate(sch string) error {
+	schHandler, err := schema.NewHandler(sch, true)
+	if err != nil {
+		return err
+	}
+
+	_, err = schema.FromString(schHandler.GQLSchema())
+	return err
+}
 
 // GraphQLHealth is used to report the health status of a GraphQL server.
 // It is required for kubernetes probing.
@@ -391,7 +433,7 @@ func NewServers(withIntrospection bool, globalEpoch *uint64, closer *y.Closer) (
 	}
 
 	resolvers := resolve.New(gqlSchema, resolverFactoryWithErrorMsg(errNoGraphQLSchema))
-	mainServer := web.NewServer(globalEpoch, resolvers)
+	mainServer := web.NewServer(globalEpoch, resolvers, false)
 
 	fns := &resolve.ResolverFns{
 		Qrw: resolve.NewQueryRewriter(),
@@ -401,7 +443,7 @@ func NewServers(withIntrospection bool, globalEpoch *uint64, closer *y.Closer) (
 		Ex:  resolve.NewDgraphExecutor(),
 	}
 	adminResolvers := newAdminResolver(mainServer, fns, withIntrospection, globalEpoch, closer)
-	adminServer := web.NewServer(globalEpoch, adminResolvers)
+	adminServer := web.NewServer(globalEpoch, adminResolvers, true)
 
 	return mainServer, adminServer, mainHealthStore
 }
@@ -528,13 +570,25 @@ func newAdminResolverFactory() resolve.ResolverFactory {
 						false
 				})
 		}).
+		WithMutationResolver("replaceAllowedCORSOrigins", func(m schema.Mutation) resolve.MutationResolver {
+			return resolve.MutationResolverFunc(
+				func(ctx context.Context, m schema.Mutation) (*resolve.Resolved, bool) {
+					return &resolve.Resolved{Err: errors.Errorf(errMsgServerNotReady), Field: m},
+						false
+				})
+		}).
 		WithQueryResolver("getGQLSchema", func(q schema.Query) resolve.QueryResolver {
 			return resolve.QueryResolverFunc(
 				func(ctx context.Context, query schema.Query) *resolve.Resolved {
 					return &resolve.Resolved{Err: errors.Errorf(errMsgServerNotReady), Field: q}
 				})
+		}).
+		WithQueryResolver("getAllowedCORSOrigins", func(q schema.Query) resolve.QueryResolver {
+			return resolve.QueryResolverFunc(
+				func(ctx context.Context, query schema.Query) *resolve.Resolved {
+					return &resolve.Resolved{Err: errors.Errorf(errMsgServerNotReady), Field: q}
+				})
 		})
-
 	for gqlMut, resolver := range adminMutationResolvers {
 		// gotta force go to evaluate the right function at each loop iteration
 		// otherwise you get variable capture issues
@@ -558,7 +612,7 @@ func getCurrentGraphQLSchema() (*gqlSchema, error) {
 }
 
 func generateGQLSchema(sch *gqlSchema) (schema.Schema, error) {
-	schHandler, err := schema.NewHandler(sch.Schema)
+	schHandler, err := schema.NewHandler(sch.Schema, false)
 	if err != nil {
 		return nil, err
 	}
@@ -680,6 +734,9 @@ func (as *adminServer) addConnectedAdminResolvers() {
 					dgEx,
 					resolve.StdQueryCompletion())
 			}).
+		WithQueryResolver("getAllowedCORSOrigins", func(q schema.Query) resolve.QueryResolver {
+			return resolve.QueryResolverFunc(resolveGetCors)
+		}).
 		WithMutationResolver("addUser",
 			func(m schema.Mutation) resolve.MutationResolver {
 				return resolve.NewDgraphResolver(
@@ -721,7 +778,10 @@ func (as *adminServer) addConnectedAdminResolvers() {
 					resolve.NewDeleteRewriter(),
 					dgEx,
 					resolve.StdDeleteCompletion(m.Name()))
-			})
+			}).
+		WithMutationResolver("replaceAllowedCORSOrigins", func(m schema.Mutation) resolve.MutationResolver {
+			return resolve.MutationResolverFunc(resolveReplaceAllowedCORSOrigins)
+		})
 }
 
 func resolverFactoryWithErrorMsg(msg string) resolve.ResolverFactory {
@@ -743,13 +803,18 @@ func (as *adminServer) resetSchema(gqlSchema schema.Schema) {
 	// set status as updating schema
 	mainHealthStore.updatingSchema()
 
-	resolverFactory := resolverFactoryWithErrorMsg(errResolverNotFound)
-	// it is nil after drop_all
-	if gqlSchema != nil {
-		resolverFactory = resolverFactory.WithConventionResolvers(gqlSchema, as.fns)
-	}
-	if as.withIntrospection {
-		resolverFactory.WithSchemaIntrospection()
+	var resolverFactory resolve.ResolverFactory
+	// If schema is nil (which becomes after drop_all) then do not attach Resolver for
+	// introspection operations, and set GQL schema to empty.
+	if gqlSchema == nil {
+		resolverFactory = resolverFactoryWithErrorMsg(errNoGraphQLSchema)
+		gqlSchema, _ = schema.FromString("")
+	} else {
+		resolverFactory = resolverFactoryWithErrorMsg(errResolverNotFound).
+			WithConventionResolvers(gqlSchema, as.fns)
+		if as.withIntrospection {
+			resolverFactory.WithSchemaIntrospection()
+		}
 	}
 
 	// Increment the Epoch when you get a new schema. So, that subscription's local epoch
@@ -764,4 +829,13 @@ func (as *adminServer) resetSchema(gqlSchema schema.Schema) {
 func response(code, msg string) map[string]interface{} {
 	return map[string]interface{}{
 		"response": map[string]interface{}{"code": code, "message": msg}}
+}
+
+// DestinationFields is used by both export and backup to specify destination
+type DestinationFields struct {
+	Destination  string
+	AccessKey    string
+	SecretKey    string
+	SessionToken string
+	Anonymous    bool
 }

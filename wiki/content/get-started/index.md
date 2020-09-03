@@ -1,6 +1,12 @@
 +++
 title = "Get Started - Quickstart Guide"
 aliases = ["/get-started-old"]
+[menu.main]
+  url = "/get-started"
+  name = "Get Started"
+  identifier = "get-started"
+  parent = "dql"
+  weight = 2
 +++
 
 {{% notice "note" %}}
@@ -10,8 +16,8 @@ You can find the getting started tutorial series [here]({{< relref "tutorials/in
 
 ## Dgraph
 
-**Dgraph** is an open-source, scalable, distributed, highly available and fast graph database,
-designed from the ground up to be run in production.
+Designed from the ground up to be run in production, **Dgraph** is the native GraphQL database with a graph backend. It is open-source, scalable, distributed, highly available and lightning fast.
+
 
 Dgraph cluster consists of different nodes (Zero, Alpha & Ratel), and each node serves a
 different purpose.
@@ -286,12 +292,12 @@ data, set a schema and queried that data back.
 
 ## Where to go from here
 
-- Go to [Clients]({{< relref "clients/index.md" >}}) to see how to
+- Go to [Clients]({{< relref "clients/_index.md" >}}) to see how to
 communicate with Dgraph from your application.
 - Take the [Tour](https://dgraph.io/tour/) for a guided tour of how to write queries in Dgraph.
 - A wider range of queries can also be found in the
-[Query Language]({{< relref "query-language/index.md" >}}) reference.
-- See [Deploy]({{< relref "deploy/index.md" >}}) if you wish to run Dgraph
+[Query Language]({{< relref "query-language/_index.md" >}}) reference.
+- See [Deploy]({{< relref "deploy/_index.md" >}}) if you wish to run Dgraph
   in a cluster.
 
 ## Need Help

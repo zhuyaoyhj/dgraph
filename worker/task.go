@@ -890,6 +890,9 @@ func processTask(ctx context.Context, q *pb.Query, gid uint32) (*pb.Result, erro
 	if q.Cache == UseTxnCache {
 		qs.cache = posting.Oracle().CacheAt(q.ReadTs)
 	}
+	if qs.cache == nil {
+		qs.cache = posting.NoCache(q.ReadTs)
+	}
 	// For now, remove the query level cache. It is causing contention for queries with high
 	// fan-out.
 
@@ -1825,11 +1828,6 @@ func parseSrcFn(ctx context.Context, q *pb.Query) (*functionContext, error) {
 		}
 		checkRoot(q, fc)
 	case uidInFn:
-		if len(q.SrcFunc.Args) == 0 {
-			err := errors.Errorf("Function '%s' requires atleast 1 argument, but got %d (%v)",
-				q.SrcFunc.Name, len(q.SrcFunc.Args), q.SrcFunc.Args)
-			return nil, err
-		}
 		for _, arg := range q.SrcFunc.Args {
 			uidParsed, err := strconv.ParseUint(arg, 0, 64)
 			if err != nil {
@@ -1861,6 +1859,12 @@ func (w *grpcWorker) ServeTask(ctx context.Context, q *pb.Query) (*pb.Result, er
 
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
+	}
+
+	// It could be possible that the server isn't ready but a peer sends a
+	// request. In that case we should check for the health here.
+	if err := x.HealthCheck(); err != nil {
+		return nil, err
 	}
 
 	gid, err := groups().BelongsToReadOnly(q.Attr, q.ReadTs)

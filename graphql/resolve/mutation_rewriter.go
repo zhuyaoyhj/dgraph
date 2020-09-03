@@ -103,7 +103,7 @@ func NewVariableGenerator() *VariableGenerator {
 // Next gets the Next variable name for the given type and xid.
 // So, if two objects of the same type have same value for xid field,
 // then they will get same variable name.
-func (v *VariableGenerator) Next(typ schema.Type, xidName, xidVal string) string {
+func (v *VariableGenerator) Next(typ schema.Type, xidName, xidVal string, auth bool) string {
 	// return previously allocated variable name for repeating xidVal
 	var key string
 	if xidName == "" || xidVal == "" {
@@ -118,7 +118,12 @@ func (v *VariableGenerator) Next(typ schema.Type, xidName, xidVal string) string
 
 	// create new variable name
 	v.counter++
-	varName := fmt.Sprintf("%s%v", typ.Name(), v.counter)
+	var varName string
+	if auth {
+		varName = fmt.Sprintf("%sAuth%v", typ.Name(), v.counter)
+	} else {
+		varName = fmt.Sprintf("%s%v", typ.Name(), v.counter)
+	}
 
 	// save it, if it was created for xidVal
 	if xidName != "" && xidVal != "" {
@@ -271,7 +276,7 @@ func (mrw *AddRewriter) Rewrite(ctx context.Context, m schema.Mutation) ([]*Upse
 
 	for _, i := range val {
 		obj := i.(map[string]interface{})
-		frag := rewriteObject(ctx, mutatedType, nil, "", varGen, true, obj, 0, xidMd)
+		frag := rewriteObject(ctx, nil, mutatedType, nil, "", varGen, true, obj, 0, xidMd)
 		mrw.frags = append(mrw.frags, frag.secondPass)
 
 		mutationsAll = buildMutations(mutationsAll, queries, frag.firstPass)
@@ -352,15 +357,19 @@ func (mrw *AddRewriter) FromMutationResult(
 		errs = schema.AsGQLErrors(errors.Errorf("no new node was created"))
 	}
 
-	authVariables, err := authorization.ExtractAuthVariables(ctx)
+	customClaims, err := authorization.ExtractCustomClaims(ctx)
 	if err != nil {
 		return nil, err
 	}
+
 	authRw := &authRewriter{
-		authVariables: authVariables,
+		authVariables: customClaims.AuthVariables,
 		varGen:        NewVariableGenerator(),
 		selector:      queryAuthSelector,
+		parentVarName: mutation.MutatedType().Name() + "Root",
 	}
+	authRw.hasAuthRules = hasAuthRules(mutation.QueryField(), authRw)
+
 	return rewriteAsQueryByIds(mutation.QueryField(), uids, authRw), errs
 }
 
@@ -402,15 +411,18 @@ func (urw *UpdateRewriter) Rewrite(
 
 	varGen := NewVariableGenerator()
 
-	authVariables, err := authorization.ExtractAuthVariables(ctx)
+	customClaims, err := authorization.ExtractCustomClaims(ctx)
 	if err != nil {
 		return nil, err
 	}
+
 	authRw := &authRewriter{
-		authVariables: authVariables,
+		authVariables: customClaims.AuthVariables,
 		varGen:        varGen,
 		selector:      updateAuthSelector,
+		parentVarName: m.MutatedType().Name() + "Root",
 	}
+	authRw.hasAuthRules = hasAuthRules(m.QueryField(), authRw)
 
 	upsertQuery := RewriteUpsertQueryFromMutation(m, authRw)
 	srcUID := MutationQueryVarUID
@@ -485,7 +497,7 @@ func (urw *UpdateRewriter) Rewrite(
 	var setFragF, setFragS, delFragF, delFragS []*mutationFragment
 
 	if setArg != nil {
-		setFrag := rewriteObject(ctx, mutatedType, nil, srcUID, varGen, true,
+		setFrag := rewriteObject(ctx, nil, mutatedType, nil, srcUID, varGen, true,
 			setArg.(map[string]interface{}), 0, xidMd)
 
 		setFragF = setFrag.firstPass
@@ -493,7 +505,7 @@ func (urw *UpdateRewriter) Rewrite(
 	}
 
 	if delArg != nil {
-		delFrag := rewriteObject(ctx, mutatedType, nil, srcUID, varGen, false,
+		delFrag := rewriteObject(ctx, nil, mutatedType, nil, srcUID, varGen, false,
 			delArg.(map[string]interface{}), 0, xidMd)
 		delFragF = delFrag.firstPass
 		delFragS = delFrag.secondPass
@@ -546,15 +558,18 @@ func (urw *UpdateRewriter) FromMutationResult(
 		}
 	}
 
-	authVariables, err := authorization.ExtractAuthVariables(ctx)
+	customClaims, err := authorization.ExtractCustomClaims(ctx)
 	if err != nil {
 		return nil, err
 	}
+
 	authRw := &authRewriter{
-		authVariables: authVariables,
+		authVariables: customClaims.AuthVariables,
 		varGen:        NewVariableGenerator(),
 		selector:      queryAuthSelector,
+		parentVarName: mutation.MutatedType().Name() + "Root",
 	}
+	authRw.hasAuthRules = hasAuthRules(mutation.QueryField(), authRw)
 	return rewriteAsQueryByIds(mutation.QueryField(), uids, authRw), nil
 }
 
@@ -604,7 +619,7 @@ func checkResult(frags []*mutationFragment, result map[string]interface{}) error
 	return err
 }
 
-func extractFilter(m schema.Mutation) map[string]interface{} {
+func extractMutationFilter(m schema.Mutation) map[string]interface{} {
 	var filter map[string]interface{}
 	mutationType := m.MutationType()
 	if mutationType == schema.UpdateMutation {
@@ -641,54 +656,55 @@ func RewriteUpsertQueryFromMutation(m schema.Mutation, authRw *authRewriter) *gq
 	})
 
 	// TODO - Cache this instead of this being a loop to find the IDField.
-	if ids := idFilter(m, m.MutatedType().IDField()); ids != nil {
+	filter := extractMutationFilter(m)
+	if ids := idFilter(filter, m.MutatedType().IDField()); ids != nil {
 		addUIDFunc(dgQuery, ids)
 	} else {
 		addTypeFunc(dgQuery, m.MutatedType().DgraphName())
 	}
 
-	filter := extractFilter(m)
 	addFilter(dgQuery, m.MutatedType(), filter)
 
-	if rbac == schema.Uncertain {
-		dgQuery = authRw.addAuthQueries(m.MutatedType(), dgQuery)
-	}
+	dgQuery = authRw.addAuthQueries(m.MutatedType(), dgQuery, rbac)
 
 	return dgQuery
 }
 
-// addUidFuncToQuery adds the uid func to the query with name `queryName`. This is useful when we
-// have auth queries since the top level query might be present in the children. We pass
-// `queryName` of top level query and it finds the appropriate query and adds `uidFunc` to it.
-func addUidFuncToQuery(q *gql.GraphQuery, uidFunc *gql.Function, queryName string) {
-	// This handles the case when root auth query is a dummy query due to RBAC evaluation to false.
-	// In such case since the query doesn't return anything, we don't need to add uid func.
-	if q.Attr == queryName+"()" {
-		return
-	}
-
-	if q.Attr != "" {
-		q.Func = uidFunc
-		return
-	}
-
-	var query *gql.GraphQuery
-	for _, cq := range q.Children {
-		if cq.Attr == queryName {
-			query = cq
-			break
-		}
-		for _, ccq := range cq.Children {
-			if ccq.Attr == queryName {
-				query = ccq
-				break
+// removeNodeReference removes any reference we know about (via @hasInverse) into a node.
+func removeNodeReference(m schema.Mutation, authRw *authRewriter,
+	qry *gql.GraphQuery) []interface{} {
+	var deletes []interface{}
+	for _, fld := range m.MutatedType().Fields() {
+		invField := fld.Inverse()
+		if invField == nil {
+			// This field be a reverse edge, in that case we need to delete the incoming connections
+			// to this node via its forward edges.
+			invField = fld.ForwardEdge()
+			if invField == nil {
+				continue
 			}
 		}
-	}
+		varName := authRw.varGen.Next(fld.Type(), "", "", false)
 
-	if query != nil {
-		query.Func = uidFunc
+		qry.Children = append(qry.Children,
+			&gql.GraphQuery{
+				Var:  varName,
+				Attr: invField.Type().DgraphPredicate(fld.Name()),
+			})
+
+		delFldName := fld.Type().DgraphPredicate(invField.Name())
+		del := map[string]interface{}{"uid": MutationQueryVarUID}
+		if invField.Type().ListType() == nil {
+			deletes = append(deletes, map[string]interface{}{
+				"uid":      fmt.Sprintf("uid(%s)", varName),
+				delFldName: del})
+		} else {
+			deletes = append(deletes, map[string]interface{}{
+				"uid":      fmt.Sprintf("uid(%s)", varName),
+				delFldName: []interface{}{del}})
+		}
 	}
+	return deletes
 }
 
 func (drw *deleteRewriter) Rewrite(
@@ -703,16 +719,18 @@ func (drw *deleteRewriter) Rewrite(
 
 	varGen := NewVariableGenerator()
 
-	authVariables, err := authorization.ExtractAuthVariables(ctx)
+	customClaims, err := authorization.ExtractCustomClaims(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	authRw := &authRewriter{
-		authVariables: authVariables,
+		authVariables: customClaims.AuthVariables,
 		varGen:        varGen,
 		selector:      deleteAuthSelector,
+		parentVarName: m.MutatedType().Name() + "Root",
 	}
+	authRw.hasAuthRules = hasAuthRules(m.QueryField(), authRw)
 
 	dgQry := RewriteUpsertQueryFromMutation(m, authRw)
 	qry := dgQry
@@ -722,60 +740,31 @@ func (drw *deleteRewriter) Rewrite(
 	}
 
 	deletes := []interface{}{map[string]interface{}{"uid": "uid(x)"}}
-
-	// we need to delete this node with ^^ and then any reference we know about
-	// (via @hasInverse) into this node.
-	for _, fld := range m.MutatedType().Fields() {
-		invField := fld.Inverse()
-		if invField == nil {
-			// This field be a reverse edge, in that case we need to delete the incoming connections
-			// to this node via its forward edges.
-			invField = fld.ForwardEdge()
-			if invField == nil {
-				continue
-			}
-		}
-		varName := varGen.Next(fld.Type(), "", "")
-
-		qry.Children = append(qry.Children,
-			&gql.GraphQuery{
-				Var:  varName,
-				Attr: invField.Type().DgraphPredicate(fld.Name()),
-			})
-
-		delFldName := fld.Type().DgraphPredicate(invField.Name())
-		del := map[string]interface{}{"uid": MutationQueryVarUID}
-		if invField.Type().ListType() == nil {
-			deletes = append(deletes,
-				map[string]interface{}{
-					"uid":      fmt.Sprintf("uid(%s)", varName),
-					delFldName: del})
-		} else {
-			deletes = append(deletes,
-				map[string]interface{}{
-					"uid":      fmt.Sprintf("uid(%s)", varName),
-					delFldName: []interface{}{del}})
-		}
+	// We need to remove node reference only if auth rule succeeds.
+	if qry.Attr != m.ResponseName()+"()" {
+		// We need to delete the node and then any reference we know about (via @hasInverse)
+		// into this node.
+		deletes = append(deletes, removeNodeReference(m, authRw, qry)...)
 	}
 
 	b, err := json.Marshal(deletes)
-
 	var finalQry *gql.GraphQuery
 	// This rewrites the Upsert mutation so we can query the nodes before deletion. The query result
 	// is later added to delete mutation result.
 	if queryField := m.QueryField(); queryField.SelectionSet() != nil {
 		queryAuthRw := &authRewriter{
-			authVariables: authVariables,
+			authVariables: customClaims.AuthVariables,
 			varGen:        varGen,
 			selector:      queryAuthSelector,
+			filterByUid:   true,
 		}
+		queryAuthRw.parentVarName = queryAuthRw.varGen.Next(queryField.Type(), "", "",
+			queryAuthRw.isWritingAuth)
+		queryAuthRw.varName = MutationQueryVar
+		queryAuthRw.hasAuthRules = hasAuthRules(queryField, authRw)
+
 		queryDel := rewriteAsQuery(queryField, queryAuthRw)
 
-		uidFunc := &gql.Function{
-			Name: "uid",
-			Args: []gql.Arg{{Value: MutationQueryVar}},
-		}
-		addUidFuncToQuery(queryDel, uidFunc, queryField.Name())
 		finalQry = &gql.GraphQuery{Children: append([]*gql.GraphQuery{dgQry}, queryDel)}
 	} else {
 		finalQry = dgQry
@@ -925,6 +914,7 @@ type mutationRes struct {
 // to secondPass, and then to make those links ourselves.
 func rewriteObject(
 	ctx context.Context,
+	parentTyp schema.Type,
 	typ schema.Type,
 	srcField schema.FieldDefinition,
 	srcUID string,
@@ -937,7 +927,7 @@ func rewriteObject(
 	atTopLevel := srcField == nil
 	topLevelAdd := srcUID == ""
 
-	variable := varGen.Next(typ, "", "")
+	variable := varGen.Next(typ, "", "", false)
 
 	id := typ.IDField()
 	if id != nil {
@@ -965,7 +955,7 @@ func rewriteObject(
 			}
 			// if the object has an xid, the variable name will be formed from the xidValue in order
 			// to handle duplicate object addition/updation
-			variable = varGen.Next(typ, xid.Name(), xidString)
+			variable = varGen.Next(typ, xid.Name(), xidString, false)
 			// check if an object with same xid has been encountered earlier
 			if xidObj := xidMetadata.variableObjMap[variable]; xidObj != nil {
 				// if we already encountered an object with same xid earlier, then we give error if:
@@ -1001,16 +991,21 @@ func rewriteObject(
 
 	var parentFrags []*mutationFragment
 
-	if !atTopLevel { // top level is never a reference - it's adding/updating
+	if !atTopLevel { // top level is never a reference - it's a new addition.
+		// this is the case of a lower level having xid which is a reference.
 		if xid != nil && xidString != "" {
 			xidFrag = asXIDReference(ctx, srcField, srcUID, typ, xid.Name(), xidString,
 				variable, withAdditionalDeletes, varGen, xidMetadata)
 			if deepXID > 2 {
-				// We need to link the parent to the already existing child
+				// Here we link the already existing node with an xid to the parent whose id is
+				// passed in srcUID. We do this linking only if there is a hasInverse relationship
+				// between the two.
+				// So for example if we had the addAuthor mutation which is also adding nested
+				// posts, then we link the authorUid(srcUID) - Author.posts - uid(Post) here.
+
 				res := make(map[string]interface{}, 1)
 				res["uid"] = srcUID
-				addInverseLink(res, srcField.Inverse(), fmt.Sprintf("uid(%s)", variable))
-
+				attachChild(res, parentTyp, srcField, fmt.Sprintf("uid(%s)", variable))
 				parentFrag := newFragment(res)
 				parentFrag.conditions = append(parentFrag.conditions, xidFrag.conditions...)
 				parentFrags = append(parentFrags, parentFrag)
@@ -1064,6 +1059,10 @@ func rewriteObject(
 		myUID = fmt.Sprintf("_:%s", variable)
 
 		if xid == nil || deepXID > 2 {
+			// Lets link the new node that we are creating with the parent if a @hasInverse
+			// exists between the two.
+			// So for example if we had the addAuthor mutation which is also adding nested
+			// posts, then we add the link _:Post Post.author AuthorUID(srcUID) here.
 			addInverseLink(newObj, srcField, srcUID)
 		}
 	} else {
@@ -1073,7 +1072,17 @@ func rewriteObject(
 	newObj["uid"] = myUID
 	frag := newFragment(newObj)
 	frag.newNodes[variable] = typ
+
 	results := &mutationRes{secondPass: []*mutationFragment{frag}}
+	if xid != nil && !atTopLevel && !xidEncounteredFirstTime && deepXID <= 2 {
+		// If this is an xid that has been encountered before, e.g. think add mutations with
+		// multiple objects as input. In that case we don't need to add the fragment to create this
+		// object, so we clear it out. We do need other fragments for linking this node to its
+		// parent which are added later.
+		// If deepXID > 2 then even if the xid has been encountered before we still keep it and
+		// build its mutation to cover all possible scenarios.
+		results.secondPass = results.secondPass[:0]
+	}
 
 	// if xidString != "", then we are adding with an xid.  In which case, we have to ensure
 	// as part of the upsert that the xid doesn't already exist.
@@ -1093,7 +1102,8 @@ func rewriteObject(
 
 	if xid != nil && !atTopLevel {
 		if deepXID <= 2 { // elements in firstPass or not
-			// duplicate query in elements >= 2, as the pair firstPass element would already have the same query.
+			// duplicate query in elements >= 2, as the pair firstPass element would already have
+			// the same query.
 			frag.queries = []*gql.GraphQuery{
 				xidQuery(variable, xidString, xid.Name(), typ),
 			}
@@ -1101,7 +1111,8 @@ func rewriteObject(
 			// We need to link the parent to the element we are just creating
 			res := make(map[string]interface{}, 1)
 			res["uid"] = srcUID
-			addInverseLink(res, srcField.Inverse(), fmt.Sprintf("_:%s", variable))
+			this := fmt.Sprintf("_:%s", variable)
+			attachChild(res, parentTyp, srcField, this)
 
 			parentFrag := newFragment(res)
 			parentFrag.conditions = append(parentFrag.conditions, frag.conditions...)
@@ -1110,13 +1121,15 @@ func rewriteObject(
 	}
 
 	var childrenFirstPass []*mutationFragment
-
 	// we build the mutation to add object here. If XID != nil, we would then move it to
 	// firstPass from secondPass (frag).
 
 	// if this object has an xid, then we don't need to
 	// rewrite its children if we have encountered it earlier.
-	if xidString == "" || xidEncounteredFirstTime {
+
+	// For deepXIDs even if the xid has been encountered before, we should build the mutation for
+	// this object.
+	if xidString == "" || xidEncounteredFirstTime || deepXID > 2 {
 		var fields []string
 		for field := range obj {
 			fields = append(fields, field)
@@ -1145,7 +1158,7 @@ func rewriteObject(
 				// { "title": "...", "author": { "username": "new user", "dob": "...", ... }
 				//          like here ^^
 				frags =
-					rewriteObject(ctx, fieldDef.Type(), fieldDef, myUID, varGen,
+					rewriteObject(ctx, typ, fieldDef.Type(), fieldDef, myUID, varGen,
 						withAdditionalDeletes, val, deepXID, xidMetadata)
 
 			case []interface{}:
@@ -1161,7 +1174,7 @@ func rewriteObject(
 				//   { "title": "...", "scores": [10.5, 9.3, ... ]
 				//            like here ^^
 				frags =
-					rewriteList(ctx, fieldDef.Type(), fieldDef, myUID, varGen,
+					rewriteList(ctx, typ, fieldDef.Type(), fieldDef, myUID, varGen,
 						withAdditionalDeletes, val, deepXID, xidMetadata)
 			default:
 				// This field is either:
@@ -1172,11 +1185,19 @@ func rewriteObject(
 				//   e.g. to remove the text or
 				//   { "friends": null, ... }
 				//   to remove all friends
+
+				// Fields with `id` directive cannot have empty values.
+				if fieldDef.HasIDDirective() && val == "" {
+					errFrag := newFragment(nil)
+					errFrag.err = fmt.Errorf("encountered an empty value for @id field `%s`", fieldName)
+					return &mutationRes{secondPass: []*mutationFragment{errFrag}}
+				}
 				frags = &mutationRes{secondPass: []*mutationFragment{newFragment(val)}}
 			}
-
 			childrenFirstPass = appendFragments(childrenFirstPass, frags.firstPass)
-			results.secondPass = squashFragments(squashIntoObject(fieldName), results.secondPass, frags.secondPass)
+
+			results.secondPass = squashFragments(squashIntoObject(fieldName), results.secondPass,
+				frags.secondPass)
 		}
 	}
 
@@ -1192,6 +1213,7 @@ func rewriteObject(
 	for _, i := range results.firstPass {
 		conditions = append(conditions, i.conditions...)
 	}
+
 	for _, i := range childrenFirstPass {
 		i.conditions = append(i.conditions, conditions...)
 	}
@@ -1206,11 +1228,6 @@ func rewriteObject(
 		results.firstPass = appendFragments(results.firstPass, []*mutationFragment{xidFrag})
 	} else if xidFrag != nil {
 		results.secondPass = appendFragments(results.secondPass, []*mutationFragment{xidFrag})
-	}
-
-	// if !xidEncounteredFirstTime, we have already seen the relevant fragments.
-	if xid != nil && !atTopLevel && !xidEncounteredFirstTime {
-		results.firstPass = []*mutationFragment{}
 	}
 
 	return results
@@ -1454,7 +1471,7 @@ func addDelete(
 		qryVar = qryVar[4 : len(qryVar)-1]
 	}
 
-	targetVar := varGen.Next(qryFld.Type(), "", "")
+	targetVar := varGen.Next(qryFld.Type(), "", "", false)
 	delFldName := qryFld.Type().DgraphPredicate(delFld.Name())
 
 	qry := &gql.GraphQuery{
@@ -1516,17 +1533,22 @@ func addDelete(
 	// then we need update permission on Author1
 
 	// grab the auth for Author1
-	authVariables, err := authorization.ExtractAuthVariables(ctx)
+	customClaims, err := authorization.ExtractCustomClaims(ctx)
 	if err != nil {
 		frag.check =
 			checkQueryResult("auth.failed", nil, schema.GQLWrapf(err, "authorization failed"))
 		return
 	}
+
 	newRw := &authRewriter{
-		authVariables: authVariables,
+		authVariables: customClaims.AuthVariables,
 		varGen:        varGen,
 		varName:       targetVar,
 		selector:      updateAuthSelector,
+		parentVarName: qryFld.Type().Name() + "Root",
+	}
+	if rn := newRw.selector(qryFld.Type()); rn != nil {
+		newRw.hasAuthRules = true
 	}
 
 	authQueries, authFilter := newRw.rewriteAuthQueries(qryFld.Type())
@@ -1594,17 +1616,23 @@ func authCheck(chk resultChecker, qry string) resultChecker {
 	}
 }
 
+func attachChild(res map[string]interface{}, parent schema.Type, child schema.FieldDefinition, childUID string) {
+	if parent == nil {
+		return
+	}
+	if child.Type().ListType() != nil {
+		res[parent.DgraphPredicate(child.Name())] =
+			[]interface{}{map[string]interface{}{"uid": childUID}}
+	} else {
+		res[parent.DgraphPredicate(child.Name())] = map[string]interface{}{"uid": childUID}
+	}
+}
+
 func addInverseLink(obj map[string]interface{}, srcField schema.FieldDefinition, srcUID string) {
 	if srcField != nil {
 		invField := srcField.Inverse()
 		if invField != nil {
-			if invField.Type().ListType() != nil {
-				obj[srcField.Type().DgraphPredicate(invField.Name())] =
-					[]interface{}{map[string]interface{}{"uid": srcUID}}
-			} else {
-				obj[srcField.Type().DgraphPredicate(invField.Name())] =
-					map[string]interface{}{"uid": srcUID}
-			}
+			attachChild(obj, srcField.Type(), invField, srcUID)
 		}
 	}
 }
@@ -1628,6 +1656,7 @@ func xidQuery(xidVariable, xidString, xidPredicate string, typ schema.Type) *gql
 
 func rewriteList(
 	ctx context.Context,
+	parentTyp schema.Type,
 	typ schema.Type,
 	srcField schema.FieldDefinition,
 	srcUID string,
@@ -1644,7 +1673,8 @@ func rewriteList(
 	for _, obj := range objects {
 		switch obj := obj.(type) {
 		case map[string]interface{}:
-			frag := rewriteObject(ctx, typ, srcField, srcUID, varGen, withAdditionalDeletes, obj, deepXID, xidMetadata)
+			frag := rewriteObject(ctx, parentTyp, typ, srcField, srcUID, varGen,
+				withAdditionalDeletes, obj, deepXID, xidMetadata)
 			if len(frag.secondPass) != 0 {
 				foundSecondPass = true
 			}
