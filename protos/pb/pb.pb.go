@@ -3276,6 +3276,13 @@ func (m *SchemaUpdate) GetLang() bool {
 	return false
 }
 
+//yhj-code
+func (m *SchemaUpdate) SetLang(lang bool) {
+	m.Lang = lang
+}
+
+//yhj-code end
+
 func (m *SchemaUpdate) GetNonNullable() bool {
 	if m != nil {
 		return m.NonNullable

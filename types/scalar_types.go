@@ -129,9 +129,17 @@ func TypeForName(name string) (TypeID, bool) {
 	return t, ok
 }
 
+//yhj-code
 // IsScalar returns whether the type is a scalar type.
 func (t TypeID) IsScalar() bool {
 	return t != UidID
+}
+
+//yhj-code end
+
+// IsString returns whether the type is a string type.
+func (t TypeID) IsString() bool {
+	return t == StringID
 }
 
 // IsNumber returns whether the type is a number type.
