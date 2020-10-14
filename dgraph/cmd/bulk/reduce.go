@@ -23,6 +23,8 @@ import (
 	"container/heap"
 	"encoding/binary"
 	"fmt"
+	"github.com/dgraph-io/dgraph/codec"
+	"github.com/dgraph-io/dgraph/posting"
 	"io"
 	"log"
 	"os"
@@ -33,9 +35,7 @@ import (
 	bo "github.com/dgraph-io/badger/v2/options"
 	bpb "github.com/dgraph-io/badger/v2/pb"
 	"github.com/dgraph-io/badger/v2/y"
-	"github.com/dgraph-io/dgraph/codec"
 	"github.com/dgraph-io/dgraph/ee/enc"
-	"github.com/dgraph-io/dgraph/posting"
 	"github.com/dgraph-io/dgraph/protos/pb"
 	"github.com/dgraph-io/dgraph/worker"
 	"github.com/dgraph-io/dgraph/x"
@@ -356,27 +356,42 @@ func (r *reducer) toList(mapEntries []*pb.MapEntry, list *bpb.KVList) int {
 			}
 		}
 
+		//yhj-code
 		pl.Pack = codec.Encode(uids, 256)
-		shouldSplit := pl.Size() > (1<<20)/2 && len(pl.Pack.Blocks) > 1
-		if shouldSplit {
-			l := posting.NewList(y.Copy(currentKey), pl, r.state.writeTs)
-			kvs, err := l.Rollup()
-			x.Check(err)
-			list.Kv = append(list.Kv, kvs...)
-		} else {
-			val, err := pl.Marshal()
-			x.Check(err)
-			kv := &bpb.KV{
-				Key:      y.Copy(currentKey),
-				Value:    val,
-				UserMeta: []byte{posting.BitCompletePosting},
-				Version:  r.state.writeTs,
-			}
-			list.Kv = append(list.Kv, kv)
+		val, err := pl.Marshal()
+		x.Check(err)
+		kv := &bpb.KV{
+			Key:      y.Copy(currentKey),
+			Value:    val,
+			UserMeta: []byte{posting.BitCompletePosting},
+			Version:  r.state.writeTs,
 		}
-
+		size += kv.Size()
+		list.Kv = append(list.Kv, kv)
 		uids = uids[:0]
 		pl.Reset()
+		//yhj-code end
+		//pl.Pack = codec.Encode(uids, 256)
+		//shouldSplit := pl.Size() > (1<<20)/2 && len(pl.Pack.Blocks) > 1
+		//if shouldSplit {
+		//	l := posting.NewList(y.Copy(currentKey), pl, r.state.writeTs)
+		//	kvs, err := l.Rollup()
+		//	x.Check(err)
+		//	list.Kv = append(list.Kv, kvs...)
+		//} else {
+		//	val, err := pl.Marshal()
+		//	x.Check(err)
+		//	kv := &bpb.KV{
+		//		Key:      y.Copy(currentKey),
+		//		Value:    val,
+		//		UserMeta: []byte{posting.BitCompletePosting},
+		//		Version:  r.state.writeTs,
+		//	}
+		//	list.Kv = append(list.Kv, kv)
+		//}
+		//
+		//uids = uids[:0]
+		//pl.Reset()
 	}
 
 	for _, mapEntry := range mapEntries {
