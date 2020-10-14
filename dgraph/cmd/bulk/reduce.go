@@ -103,7 +103,7 @@ func (r *reducer) createBadger(i int) *badger.DB {
 		}
 	}
 
-	opt := badger.DefaultOptions(r.opt.shardOutputDirs[i]).WithSyncWrites(true).
+	opt := badger.DefaultOptions(r.opt.shardOutputDirs[i]).WithSyncWrites(false).
 		WithTableLoadingMode(bo.MemoryMap).WithValueThreshold(1 << 10 /* 1 KB */).
 		WithLogger(nil).WithMaxCacheSize(1 << 20).
 		WithEncryptionKey(enc.ReadEncryptionKeyFile(r.opt.BadgerKeyFile))
@@ -216,7 +216,7 @@ func (r *reducer) encodeAndWrite(
 			}
 			addDone(doneStreams, list)
 			x.Check(writer.Write(list))
-			x.Check(writer.Flush())
+			//x.Check(writer.Flush())
 			doneStreams = doneStreams[:0]
 			list = &bpb.KVList{}
 			listSize = 0
