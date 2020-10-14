@@ -103,7 +103,7 @@ func (r *reducer) createBadger(i int) *badger.DB {
 		}
 	}
 
-	opt := badger.DefaultOptions(r.opt.shardOutputDirs[i]).WithSyncWrites(false).
+	opt := badger.DefaultOptions(r.opt.shardOutputDirs[i]).WithSyncWrites(true).
 		WithTableLoadingMode(bo.MemoryMap).WithValueThreshold(1 << 10 /* 1 KB */).
 		WithLogger(nil).WithMaxCacheSize(1 << 20).
 		WithEncryptionKey(enc.ReadEncryptionKeyFile(r.opt.BadgerKeyFile))
