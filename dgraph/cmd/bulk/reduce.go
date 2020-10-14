@@ -357,49 +357,49 @@ func (r *reducer) toList(mapEntries []*pb.MapEntry, list *bpb.KVList) int {
 		}
 
 		//yhj-code 1.0.15
-		//pl.Pack = codec.Encode(uids, 256)
-		//val, err := pl.Marshal()
-		//x.Check(err)
-		//kv := &bpb.KV{
-		//	Key:      y.Copy(currentKey),
-		//	Value:    val,
-		//	UserMeta: []byte{posting.BitCompletePosting},
-		//	Version:  r.state.writeTs,
-		//}
-		//size += kv.Size()
-		//list.Kv = append(list.Kv, kv)
-		//uids = uids[:0]
-		//pl.Reset()
-		//yhj-code end
 		pl.Pack = codec.Encode(uids, 256)
-		shouldSplit := pl.Size() > (1<<20)/2 && len(pl.Pack.Blocks) > 1
-		if shouldSplit {
-			l := posting.NewList(y.Copy(currentKey), pl, r.state.writeTs)
-			kvs, err := l.Rollup()
-			x.Check(err)
-			list.Kv = append(list.Kv, kvs...)
-			//yhj-code ignore to add size
-			for _, v := range kvs {
-				size += v.Size()
-			}
-			//yhj-code end
-		} else {
-			val, err := pl.Marshal()
-			x.Check(err)
-			kv := &bpb.KV{
-				Key:      y.Copy(currentKey),
-				Value:    val,
-				UserMeta: []byte{posting.BitCompletePosting},
-				Version:  r.state.writeTs,
-			}
-			list.Kv = append(list.Kv, kv)
-			//yhj-code ignore to add size
-			size += kv.Size()
-			//yhj-code end
+		val, err := pl.Marshal()
+		x.Check(err)
+		kv := &bpb.KV{
+			Key:      y.Copy(currentKey),
+			Value:    val,
+			UserMeta: []byte{posting.BitCompletePosting},
+			Version:  r.state.writeTs,
 		}
-
+		size += kv.Size()
+		list.Kv = append(list.Kv, kv)
 		uids = uids[:0]
 		pl.Reset()
+		//yhj-code end
+		//pl.Pack = codec.Encode(uids, 256)
+		//shouldSplit := pl.Size() > (1<<20)/2 && len(pl.Pack.Blocks) > 1
+		//if shouldSplit {
+		//	l := posting.NewList(y.Copy(currentKey), pl, r.state.writeTs)
+		//	kvs, err := l.Rollup()
+		//	x.Check(err)
+		//	list.Kv = append(list.Kv, kvs...)
+		//	//yhj-code ignore to add size
+		//	for _, v := range kvs {
+		//		size += v.Size()
+		//	}
+		//	//yhj-code end
+		//} else {
+		//	val, err := pl.Marshal()
+		//	x.Check(err)
+		//	kv := &bpb.KV{
+		//		Key:      y.Copy(currentKey),
+		//		Value:    val,
+		//		UserMeta: []byte{posting.BitCompletePosting},
+		//		Version:  r.state.writeTs,
+		//	}
+		//	list.Kv = append(list.Kv, kv)
+		//	//yhj-code ignore to add size
+		//	size += kv.Size()
+		//	//yhj-code end
+		//}
+		//
+		//uids = uids[:0]
+		//pl.Reset()
 	}
 
 	for _, mapEntry := range mapEntries {
