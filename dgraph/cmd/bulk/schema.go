@@ -189,6 +189,9 @@ func (s *schemaStore) write(db *badger.DB, preds []string) {
 		if !ok {
 			continue
 		}
+		if sch.ValueType == pb.Posting_DEFAULT {
+			sch.ValueType = pb.Posting_STRING
+		}
 		k := x.SchemaKey(pred)
 		v, err := sch.Marshal()
 		x.Check(err)
