@@ -232,7 +232,25 @@ func (s *schemaStore) write(db *badger.DB, preds []string) {
 		}
 		typsTemp = append(typsTemp, thingSystem)
 	}
-	s.types = append(s.types, typsTemp...)
+	fmt.Println("origin")
+	for _, v := range s.types {
+		fmt.Println(v.TypeName)
+		for _, vf := range v.Fields {
+			temp, err := vf.Marshal()
+			fmt.Println(string(temp), err)
+		}
+	}
+
+	s.types = typsTemp
+	fmt.Println("new")
+	for _, v := range s.types {
+		fmt.Println(v.TypeName)
+		for _, vf := range v.Fields {
+			temp, err := vf.Marshal()
+			fmt.Println(string(temp), err)
+		}
+	}
+	//s.types = append(s.types, typsTemp...)
 	//yhj-code end
 
 	// Write all the types as all groups should have access to all the types.
