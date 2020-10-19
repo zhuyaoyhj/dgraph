@@ -197,6 +197,16 @@ func (s *schemaStore) write(db *badger.DB, preds []string) {
 		x.Check(w.SetAt(k, v, posting.BitSchemaPosting, 1))
 	}
 
+	//yhj-code create schemaorg:Thing type
+	var thingSystem = &pb.TypeUpdate{
+		TypeName: "schemaorg:Thing",
+	}
+	for _, shemaUpdate := range s.schemaMap {
+		thingSystem.Fields = append(thingSystem.Fields, shemaUpdate)
+	}
+	s.types = append(s.types, thingSystem)
+	//yhj-code end
+
 	// Write all the types as all groups should have access to all the types.
 	for _, typ := range s.types {
 		k := x.TypeKey(typ.TypeName)
