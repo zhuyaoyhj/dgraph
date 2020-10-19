@@ -204,8 +204,18 @@ func (s *schemaStore) write(db *badger.DB, preds []string) {
 	var thingSystem = &pb.TypeUpdate{
 		TypeName: "schemaorg:Thing",
 	}
-	for _, shemaUpdate := range s.schemaMap {
-		thingSystem.Fields = append(thingSystem.Fields, shemaUpdate)
+	for pred, _ := range s.schemaMap {
+		schema := &pb.SchemaUpdate{Predicate: pred}
+		thingSystem.Fields = append(thingSystem.Fields, schema)
+	}
+
+	for _, v := range s.types {
+		if v.TypeName == "schemaorg:Thing" {
+			for _, pred := range v.Fields {
+				schema := &pb.SchemaUpdate{Predicate: pred.Predicate}
+				thingSystem.Fields = append(thingSystem.Fields, schema)
+			}
+		}
 	}
 	s.types = append(s.types, thingSystem)
 	//yhj-code end
