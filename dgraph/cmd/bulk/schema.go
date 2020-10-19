@@ -232,24 +232,24 @@ func (s *schemaStore) write(db *badger.DB, preds []string) {
 		}
 		typsTemp = append(typsTemp, thingSystem)
 	}
-	fmt.Println("origin")
-	for _, v := range s.types {
-		fmt.Println(v.TypeName)
-		for _, vf := range v.Fields {
-			temp, err := vf.Marshal()
-			fmt.Println(string(temp), err)
-		}
-	}
+	//fmt.Println("origin")
+	//for _, v := range s.types {
+	//	fmt.Println(v.TypeName)
+	//	for _, vf := range v.Fields {
+	//		temp, err := vf.Marshal()
+	//		fmt.Println(string(temp), err)
+	//	}
+	//}
 
 	s.types = typsTemp
-	fmt.Println("new")
-	for _, v := range s.types {
-		fmt.Println(v.TypeName)
-		for _, vf := range v.Fields {
-			temp, err := vf.Marshal()
-			fmt.Println(string(temp), err)
-		}
-	}
+	//fmt.Println("new")
+	//for _, v := range s.types {
+	//	fmt.Println(v.TypeName)
+	//	for _, vf := range v.Fields {
+	//		temp, err := vf.Marshal()
+	//		fmt.Println(string(temp), err)
+	//	}
+	//}
 	//s.types = append(s.types, typsTemp...)
 	//yhj-code end
 
