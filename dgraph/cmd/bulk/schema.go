@@ -201,23 +201,32 @@ func (s *schemaStore) write(db *badger.DB, preds []string) {
 	}
 
 	//yhj-code create schemaorg:Thing type
-	var thingSystem = &pb.TypeUpdate{
-		TypeName: "schemaorg:Thing",
-	}
-	for pred, _ := range s.schemaMap {
-		schema := &pb.SchemaUpdate{Predicate: pred}
-		thingSystem.Fields = append(thingSystem.Fields, schema)
-	}
-
-	for _, v := range s.types {
-		if v.TypeName == "schemaorg:Thing" {
-			for _, pred := range v.Fields {
-				schema := &pb.SchemaUpdate{Predicate: pred.Predicate}
-				thingSystem.Fields = append(thingSystem.Fields, schema)
-			}
+	var typsTemp []*pb.TypeUpdate
+	for _, typ := range s.types {
+		var thingSystem = &pb.TypeUpdate{
+			TypeName: typ.TypeName,
 		}
+		var typePredMap = make(map[string]struct{})
+		for pred, _ := range s.schemaMap {
+			if _, ok := typePredMap[pred]; ok {
+				continue
+			}
+			schema := &pb.SchemaUpdate{Predicate: pred}
+			thingSystem.Fields = append(thingSystem.Fields, schema)
+			typePredMap[pred] = struct{}{}
+		}
+
+		for _, pred := range typ.Fields {
+			if _, ok := typePredMap[pred.Predicate]; ok {
+				continue
+			}
+			schema := &pb.SchemaUpdate{Predicate: pred.Predicate}
+			thingSystem.Fields = append(thingSystem.Fields, schema)
+			typePredMap[pred.Predicate] = struct{}{}
+		}
+		typsTemp = append(typsTemp, thingSystem)
 	}
-	s.types = append(s.types, thingSystem)
+	s.types = append(s.types, typsTemp...)
 	//yhj-code end
 
 	// Write all the types as all groups should have access to all the types.
