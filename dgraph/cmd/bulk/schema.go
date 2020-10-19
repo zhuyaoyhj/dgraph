@@ -208,6 +208,9 @@ func (s *schemaStore) write(db *badger.DB, preds []string) {
 		}
 		var typePredMap = make(map[string]struct{})
 		for pred, _ := range s.schemaMap {
+			if strings.Contains(pred, "dgraph") {
+				continue
+			}
 			if _, ok := typePredMap[pred]; ok {
 				continue
 			}
@@ -217,6 +220,9 @@ func (s *schemaStore) write(db *badger.DB, preds []string) {
 		}
 
 		for _, pred := range typ.Fields {
+			if strings.Contains(pred.Predicate, "dgraph") {
+				continue
+			}
 			if _, ok := typePredMap[pred.Predicate]; ok {
 				continue
 			}
