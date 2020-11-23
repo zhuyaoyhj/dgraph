@@ -19,7 +19,7 @@ package query
 import (
 	"container/heap"
 	"context"
-	"fmt"
+	"github.com/dgraph-io/dgo/v2/protos/api"
 	"math"
 	"sync"
 
@@ -104,7 +104,7 @@ type nodeInfo struct {
 	node *queueItem
 }
 
-func (sg *SubGraph) getCost(matrix, list int) (cost float64,
+func (sg *SubGraph) getCost(matrix, list int, fp shortestPathFacetsParam) (cost float64,
 	fcs *pb.Facets, rerr error) {
 
 	cost = 1.0
@@ -121,21 +121,27 @@ func (sg *SubGraph) getCost(matrix, list int) (cost float64,
 		rerr = errFacet
 		return cost, fcs, rerr
 	}
-
-	if len(fcs.Facets) > 1 {
-		//yhj-code remove facets len judgement
+	//yhj-code remove facets len judgement
+	if fp.AllKeys == true {
+		//if len(fcs.Facets) > 1 {
 		//rerr = errors.Errorf("Expected 1 but got %d facets", len(fcs.Facets))
 		return cost, fcs, rerr
-		//yhj-code end
 	}
-	tv, err := facets.ValFor(fcs.Facets[0])
-	fmt.Println("facets", fcs.Facets[0])
-	fmt.Println(err, tv)
+	var facFacet *api.Facet
+	for _, v := range fcs.Facets {
+		if v.Key == fp.FacetsParam {
+			facFacet = v
+		}
+	}
+	if facFacet == nil {
+		facFacet = fcs.Facets[0]
+	}
+
+	tv, err := facets.ValFor(facFacet /*fcs.Facets[0]*/)
+	//yhj-code end
 	if err != nil {
-		//yhj-code add more facets show
-		return cost, fcs, rerr
-		//return 0.0, nil, err
-		//yhj-code end
+		return 0.0, nil, err
+
 	}
 	switch {
 	case tv.Tid == types.IntID:
@@ -147,6 +153,14 @@ func (sg *SubGraph) getCost(matrix, list int) (cost float64,
 	}
 	return cost, fcs, rerr
 }
+
+//yhj-code params
+type shortestPathFacetsParam struct {
+	FacetsParam string
+	AllKeys     bool
+}
+
+//yhj-code end
 
 func (sg *SubGraph) expandOut(ctx context.Context,
 	adjacencyMap map[uint64]map[uint64]mapItem, next chan bool, rch chan error) {
@@ -169,15 +183,30 @@ func (sg *SubGraph) expandOut(ctx context.Context,
 		if !isNext {
 			return
 		}
+
+		//yhj-code
+		var fp = shortestPathFacetsParam{
+			AllKeys:     false,
+			FacetsParam: "",
+		}
+		//yhj-code end
 		rrch := make(chan error, len(exec))
 		for _, subgraph := range exec {
-			fmt.Println("test start")
-			fmt.Println(subgraph.Attr)
-			fmt.Println(subgraph.Params.Facet.AllKeys)
-			for i, k := range subgraph.Params.Facet.Param {
-				fmt.Println(i, k.Alias, k.Key)
+			//yhj-code
+			if subgraph.Params.Facet != nil && subgraph.Params.Facet.AllKeys == false {
+				fp.FacetsParam = subgraph.Params.Facet.Param[0].Key
+				subgraph.Params.Facet.AllKeys = true
+			} else {
+				fp.AllKeys = true
 			}
-			fmt.Println("test end")
+			//yhj-code end
+			//fmt.Println("test start")
+			//fmt.Println(subgraph.Attr)
+			//fmt.Println(subgraph.Params.Facet.AllKeys)
+			//for i, k := range subgraph.Params.Facet.Param {
+			//	fmt.Println(i, k.Alias, k.Key)
+			//}
+			//fmt.Println("test end")
 			go ProcessGraph(ctx, subgraph, dummy, rrch)
 		}
 
@@ -222,7 +251,7 @@ func (sg *SubGraph) expandOut(ctx context.Context,
 							adjacencyMap[fromUID] = make(map[uint64]mapItem)
 						}
 						// The default cost we'd use is 1.
-						cost, facet, err := subgraph.getCost(mIdx, lIdx)
+						cost, facet, err := subgraph.getCost(mIdx, lIdx, fp)
 						switch {
 						case err == errFacet:
 							// Ignore the edge and continue.
