@@ -120,6 +120,7 @@ func (sg *SubGraph) getCost(matrix, list int) (cost float64,
 		rerr = errFacet
 		return cost, fcs, rerr
 	}
+	//yhj-code
 	if len(fcs.Facets) > 1 {
 		rerr = errors.Errorf("Expected 1 but got %d facets", len(fcs.Facets))
 		return cost, fcs, rerr
@@ -624,6 +625,7 @@ func createPathSubgraph(ctx context.Context, dist map[uint64]nodeInfo, totalWeig
 	shortestSg.uidMatrix = []*pb.List{{Uids: []uint64{curUid}}}
 
 	curNode := shortestSg
+	//yhj-code
 	for i := 0; i < len(result)-1; i++ {
 		curUid := result[i]
 		childUid := result[i+1]
