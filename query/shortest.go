@@ -19,6 +19,7 @@ package query
 import (
 	"container/heap"
 	"context"
+	"fmt"
 	"math"
 	"sync"
 
@@ -129,7 +130,10 @@ func (sg *SubGraph) getCost(matrix, list int) (cost float64,
 	}
 	tv, err := facets.ValFor(fcs.Facets[0])
 	if err != nil {
-		return 0.0, nil, err
+		//yhj-code add more facets show
+		return cost, fcs, rerr
+		//return 0.0, nil, err
+		//yhj-code end
 	}
 	switch {
 	case tv.Tid == types.IntID:
@@ -165,6 +169,11 @@ func (sg *SubGraph) expandOut(ctx context.Context,
 		}
 		rrch := make(chan error, len(exec))
 		for _, subgraph := range exec {
+			fmt.Println("test start")
+			fmt.Println(subgraph.Attr)
+			fmt.Println(subgraph.Params.Facet.AllKeys)
+			fmt.Println(subgraph.Params.FacetVar)
+			fmt.Println("test end")
 			go ProcessGraph(ctx, subgraph, dummy, rrch)
 		}
 
