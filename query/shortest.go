@@ -129,6 +129,8 @@ func (sg *SubGraph) getCost(matrix, list int) (cost float64,
 		//yhj-code end
 	}
 	tv, err := facets.ValFor(fcs.Facets[0])
+	fmt.Println("facets", fcs.Facets[0])
+	fmt.Println(err, tv)
 	if err != nil {
 		//yhj-code add more facets show
 		return cost, fcs, rerr
@@ -172,7 +174,9 @@ func (sg *SubGraph) expandOut(ctx context.Context,
 			fmt.Println("test start")
 			fmt.Println(subgraph.Attr)
 			fmt.Println(subgraph.Params.Facet.AllKeys)
-			fmt.Println(subgraph.Params.FacetVar)
+			for i, k := range subgraph.Params.Facet.Param {
+				fmt.Println(i, k.Alias, k.Key)
+			}
 			fmt.Println("test end")
 			go ProcessGraph(ctx, subgraph, dummy, rrch)
 		}
