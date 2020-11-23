@@ -120,10 +120,12 @@ func (sg *SubGraph) getCost(matrix, list int) (cost float64,
 		rerr = errFacet
 		return cost, fcs, rerr
 	}
-	//yhj-code remove facets
+
 	if len(fcs.Facets) > 1 {
+		//yhj-code remove facets len judgement
 		//rerr = errors.Errorf("Expected 1 but got %d facets", len(fcs.Facets))
 		return cost, fcs, rerr
+		//yhj-code end
 	}
 	tv, err := facets.ValFor(fcs.Facets[0])
 	if err != nil {
@@ -638,19 +640,6 @@ func createPathSubgraph(ctx context.Context, dist map[uint64]nodeInfo, totalWeig
 			node.Params.Facet = &pb.FacetParams{}
 		}
 		node.Attr = nodeInfo.attr
-		//yhj-code inrich attr with facets
-		if nodeInfo.facet != nil && nodeInfo.facet.Facets != nil {
-			node.Attr += "("
-			facetlen := len(nodeInfo.facet.Facets)
-			for k, v := range nodeInfo.facet.Facets {
-				if k == (facetlen - 1) {
-					node.Attr += v.Key + ":" + string(v.Value)
-				} else {
-					node.Attr += v.Key + ":" + string(v.Value) + " "
-				}
-			}
-			node.Attr += ")"
-		}
 
 		node.facetsMatrix = []*pb.FacetsList{{FacetsList: []*pb.Facets{nodeInfo.facet}}}
 		node.SrcUIDs = &pb.List{Uids: []uint64{curUid}}
