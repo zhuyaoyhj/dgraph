@@ -121,14 +121,13 @@ func (sg *SubGraph) getCost(matrix, list int) (cost float64,
 		return cost, fcs, rerr
 	}
 	//yhj-code remove facets
-	//if len(fcs.Facets) > 1 {
-	//	rerr = errors.Errorf("Expected 1 but got %d facets", len(fcs.Facets))
-	//	return cost, fcs, rerr
-	//}
+	if len(fcs.Facets) > 1 {
+		//rerr = errors.Errorf("Expected 1 but got %d facets", len(fcs.Facets))
+		return cost, fcs, rerr
+	}
 	tv, err := facets.ValFor(fcs.Facets[0])
 	if err != nil {
-		return cost, fcs, rerr
-		//return 0.0, nil, err
+		return 0.0, nil, err
 	}
 	switch {
 	case tv.Tid == types.IntID:
