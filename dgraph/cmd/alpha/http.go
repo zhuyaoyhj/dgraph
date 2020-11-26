@@ -282,6 +282,7 @@ func queryHandler(w http.ResponseWriter, r *http.Request) {
 		// Check2 will fatal and shut the server down in such scenario. We don't want that.
 		glog.Errorln("Unable to write response: ", err)
 	}
+	glog.Infof("request=%s costTime=%v msg=mutate end", string(body), e)
 }
 
 func mutationHandler(w http.ResponseWriter, r *http.Request) {
@@ -433,6 +434,7 @@ func mutationHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, _ = writeResponse(w, r, js)
+	glog.Infof("request=%s costTime=%v msg=mutate end", string(body), e)
 }
 
 func commitHandler(w http.ResponseWriter, r *http.Request) {
