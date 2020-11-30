@@ -249,6 +249,11 @@ func (m *mapper) processNQuad(nq gql.NQuad) {
 	}
 
 	fwd, rev := m.createPostings(nq, de)
+	//yhj-code remove inconsistent data
+	if fwd == nil && rev == nil {
+		return
+	}
+	//end
 	shard := m.state.shards.shardFor(nq.Predicate)
 	key := x.DataKey(nq.Predicate, sid)
 	m.addMapEntry(key, fwd, shard)
