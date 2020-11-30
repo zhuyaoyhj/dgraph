@@ -3416,6 +3416,10 @@ func (*SchemaUpdate) Descriptor() ([]byte, []int) {
 func (m *SchemaUpdate) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
 }
+
+func (m *SchemaUpdate) SetLang(lang bool) {
+	m.Lang = lang
+}
 func (m *SchemaUpdate) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
 	if deterministic {
 		return xxx_messageInfo_SchemaUpdate.Marshal(b, m, deterministic)
