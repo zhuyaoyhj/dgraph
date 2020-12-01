@@ -405,6 +405,7 @@ func runKShortestPaths(ctx context.Context, sg *SubGraph) ([]*SubGraph, error) {
 				}
 				numHops++
 			}
+			fmt.Println("numHops: ", numHops, "maxHops", maxHops)
 		}
 		select {
 		case <-ctx.Done():
