@@ -19,6 +19,7 @@ package query
 import (
 	"container/heap"
 	"context"
+	"fmt"
 	"github.com/dgraph-io/dgo/v2/protos/api"
 	"math"
 	"sync"
@@ -559,7 +560,6 @@ func shortestPath(ctx context.Context, sg *SubGraph) ([]*SubGraph, error) {
 		if item.uid == sg.Params.To {
 			break
 		}
-
 		if numHops < maxHops && item.hop > numHops-1 {
 			// Explore the next level by calling processGraph and add them to the queue.
 			if !stopExpansion {
@@ -580,6 +580,7 @@ func shortestPath(ctx context.Context, sg *SubGraph) ([]*SubGraph, error) {
 				}
 				numHops++
 			}
+			fmt.Println("numHops: ", numHops, "maxHops", maxHops)
 		}
 
 		neighbours := adjacencyMap[item.uid]
