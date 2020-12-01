@@ -385,6 +385,7 @@ func runKShortestPaths(ctx context.Context, sg *SubGraph) ([]*SubGraph, error) {
 				// We found the required number of paths.
 				break
 			}
+			continue
 		}
 		if item.hop > numHops && numHops < maxHops {
 			// Explore the next level by calling processGraph and add them
