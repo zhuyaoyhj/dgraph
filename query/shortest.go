@@ -385,7 +385,9 @@ func runKShortestPaths(ctx context.Context, sg *SubGraph) ([]*SubGraph, error) {
 				// We found the required number of paths.
 				break
 			}
+			//yhj-code 跳过最终终点，不将其放入优先队列中
 			continue
+			//yhj-code end
 		}
 		if item.hop > numHops && numHops < maxHops {
 			// Explore the next level by calling processGraph and add them
