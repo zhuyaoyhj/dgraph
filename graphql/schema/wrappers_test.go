@@ -22,10 +22,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dgraph-io/gqlparser/v2/ast"
 	"github.com/google/go-cmp/cmp"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/require"
-	"github.com/vektah/gqlparser/v2/ast"
 	"gopkg.in/yaml.v2"
 )
 
@@ -92,10 +92,11 @@ type Starship {
 	require.True(t, ok, "expected to be able to convert sch to internal schema type")
 
 	author := map[string]string{
-		"name":       "Author.name",
-		"dob":        "Author.dob",
-		"reputation": "Author.reputation",
-		"posts":      "Author.posts",
+		"name":           "Author.name",
+		"dob":            "Author.dob",
+		"reputation":     "Author.reputation",
+		"posts":          "Author.posts",
+		"postsAggregate": "Author.postsAggregate",
 	}
 	post := map[string]string{
 		"postType": "Post.postType",
@@ -105,12 +106,16 @@ type Starship {
 		"name":      "Character.name",
 		"appearsIn": "Character.appearsIn",
 	}
+	employee := map[string]string{
+		"ename": "Employee.ename",
+	}
 	human := map[string]string{
-		"ename":        "Employee.ename",
-		"name":         "Character.name",
-		"appearsIn":    "Character.appearsIn",
-		"starships":    "Human.starships",
-		"totalCredits": "Human.totalCredits",
+		"ename":              "Employee.ename",
+		"name":               "Character.name",
+		"appearsIn":          "Character.appearsIn",
+		"starships":          "Human.starships",
+		"totalCredits":       "Human.totalCredits",
+		"starshipsAggregate": "Human.starshipsAggregate",
 	}
 	droid := map[string]string{
 		"name":            "Character.name",
@@ -123,27 +128,34 @@ type Starship {
 	}
 
 	expected := map[string]map[string]string{
-		"Author":              author,
-		"UpdateAuthorPayload": author,
-		"DeleteAuthorPayload": author,
-		"Post":                post,
-		"UpdatePostPayload":   post,
-		"DeletePostPayload":   post,
-		"Employee": map[string]string{
-			"ename": "Employee.ename",
-		},
-		"Character":              character,
-		"UpdateCharacterPayload": character,
-		"DeleteCharacterPayload": character,
-		"Human":                  human,
-		"UpdateHumanPayload":     human,
-		"DeleteHumanPayload":     human,
-		"Droid":                  droid,
-		"UpdateDroidPayload":     droid,
-		"DeleteDroidPayload":     droid,
-		"Starship":               starship,
-		"UpdateStarshipPayload":  starship,
-		"DeleteStarshipPayload":  starship,
+		"Author":                   author,
+		"UpdateAuthorPayload":      author,
+		"DeleteAuthorPayload":      author,
+		"Post":                     post,
+		"UpdatePostPayload":        post,
+		"DeletePostPayload":        post,
+		"Employee":                 employee,
+		"Character":                character,
+		"UpdateCharacterPayload":   character,
+		"DeleteCharacterPayload":   character,
+		"Human":                    human,
+		"UpdateHumanPayload":       human,
+		"DeleteHumanPayload":       human,
+		"Droid":                    droid,
+		"UpdateDroidPayload":       droid,
+		"DeleteDroidPayload":       droid,
+		"UpdateEmployeePayload":    employee,
+		"DeleteEmployeePayload":    employee,
+		"Starship":                 starship,
+		"UpdateStarshipPayload":    starship,
+		"DeleteStarshipPayload":    starship,
+		"AuthorAggregateResult":    {"count": "AuthorAggregateResult.count"},
+		"CharacterAggregateResult": {"count": "CharacterAggregateResult.count"},
+		"DroidAggregateResult":     {"count": "DroidAggregateResult.count"},
+		"EmployeeAggregateResult":  {"count": "EmployeeAggregateResult.count"},
+		"HumanAggregateResult":     {"count": "HumanAggregateResult.count"},
+		"PostAggregateResult":      {"count": "PostAggregateResult.count"},
+		"StarshipAggregateResult":  {"count": "StarshipAggregateResult.count"},
 	}
 
 	if diff := cmp.Diff(expected, s.dgraphPredicate); diff != "" {
@@ -214,10 +226,11 @@ func TestDgraphMapping_WithDirectives(t *testing.T) {
 	require.True(t, ok, "expected to be able to convert sch to internal schema type")
 
 	author := map[string]string{
-		"name":       "dgraph.author.name",
-		"dob":        "dgraph.author.dob",
-		"reputation": "dgraph.author.reputation",
-		"posts":      "dgraph.author.posts",
+		"name":           "dgraph.author.name",
+		"dob":            "dgraph.author.dob",
+		"reputation":     "dgraph.author.reputation",
+		"posts":          "dgraph.author.posts",
+		"postsAggregate": "dgraph.author.postsAggregate",
 	}
 	post := map[string]string{
 		"postType": "dgraph.post_type",
@@ -228,16 +241,20 @@ func TestDgraphMapping_WithDirectives(t *testing.T) {
 		"appearsIn": "appears_in",
 	}
 	human := map[string]string{
-		"ename":        "dgraph.employee.en.ename",
-		"name":         "performance.character.name",
-		"appearsIn":    "appears_in",
-		"starships":    "Human.starships",
-		"totalCredits": "credits",
+		"ename":              "dgraph.employee.en.ename",
+		"name":               "performance.character.name",
+		"appearsIn":          "appears_in",
+		"starships":          "Human.starships",
+		"totalCredits":       "credits",
+		"starshipsAggregate": "Human.starshipsAggregate",
 	}
 	droid := map[string]string{
 		"name":            "performance.character.name",
 		"appearsIn":       "appears_in",
 		"primaryFunction": "roboDroid.primaryFunction",
+	}
+	employee := map[string]string{
+		"ename": "dgraph.employee.en.ename",
 	}
 	starship := map[string]string{
 		"name":   "star.ship.name",
@@ -245,27 +262,34 @@ func TestDgraphMapping_WithDirectives(t *testing.T) {
 	}
 
 	expected := map[string]map[string]string{
-		"Author":              author,
-		"UpdateAuthorPayload": author,
-		"DeleteAuthorPayload": author,
-		"Post":                post,
-		"UpdatePostPayload":   post,
-		"DeletePostPayload":   post,
-		"Employee": map[string]string{
-			"ename": "dgraph.employee.en.ename",
-		},
-		"Character":              character,
-		"UpdateCharacterPayload": character,
-		"DeleteCharacterPayload": character,
-		"Human":                  human,
-		"UpdateHumanPayload":     human,
-		"DeleteHumanPayload":     human,
-		"Droid":                  droid,
-		"UpdateDroidPayload":     droid,
-		"DeleteDroidPayload":     droid,
-		"Starship":               starship,
-		"UpdateStarshipPayload":  starship,
-		"DeleteStarshipPayload":  starship,
+		"Author":                   author,
+		"UpdateAuthorPayload":      author,
+		"DeleteAuthorPayload":      author,
+		"Post":                     post,
+		"UpdatePostPayload":        post,
+		"DeletePostPayload":        post,
+		"Employee":                 employee,
+		"DeleteEmployeePayload":    employee,
+		"UpdateEmployeePayload":    employee,
+		"Character":                character,
+		"UpdateCharacterPayload":   character,
+		"DeleteCharacterPayload":   character,
+		"Human":                    human,
+		"UpdateHumanPayload":       human,
+		"DeleteHumanPayload":       human,
+		"Droid":                    droid,
+		"UpdateDroidPayload":       droid,
+		"DeleteDroidPayload":       droid,
+		"Starship":                 starship,
+		"UpdateStarshipPayload":    starship,
+		"DeleteStarshipPayload":    starship,
+		"AuthorAggregateResult":    {"count": "AuthorAggregateResult.count"},
+		"CharacterAggregateResult": {"count": "CharacterAggregateResult.count"},
+		"DroidAggregateResult":     {"count": "DroidAggregateResult.count"},
+		"EmployeeAggregateResult":  {"count": "EmployeeAggregateResult.count"},
+		"HumanAggregateResult":     {"count": "HumanAggregateResult.count"},
+		"PostAggregateResult":      {"count": "PostAggregateResult.count"},
+		"StarshipAggregateResult":  {"count": "StarshipAggregateResult.count"},
 	}
 
 	if diff := cmp.Diff(expected, s.dgraphPredicate); diff != "" {
@@ -577,7 +601,7 @@ func TestParseBodyTemplate(t *testing.T) {
 		},
 		{
 			"parses body template with an array of object and hardcoded scalars correctly",
-			`{ author: $id, admin: false, post: { id: $postID, rating: 4.5, 
+			`{ author: $id, admin: false, post: { id: $postID, rating: 4.5,
 				comments: [{ text: $text, type: "hidden" }] }, age: 23, meta: null}`,
 			map[string]interface{}{"author": "$id", "admin": false,
 				"post": map[string]interface{}{"id": "$postID", "rating": 4.5,
@@ -1101,7 +1125,7 @@ func TestParseSecrets(t *testing.T) {
 			`,
 			nil,
 			"",
-			errors.New("required field missing in Dgraph.Authorization: `Verification key` `Header` `Namespace` `Algo`"),
+			errors.New("required field missing in Dgraph.Authorization: `Verification key`/`JWKUrl` `Algo` `Header` `Namespace`"),
 		},
 		{
 			"Valid Dgraph.Authorization with audience field",

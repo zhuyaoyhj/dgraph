@@ -17,31 +17,12 @@
 package schema
 
 import (
-	"github.com/vektah/gqlparser/v2/ast"
-	"github.com/vektah/gqlparser/v2/validator"
+	"errors"
+	"strconv"
+
+	"github.com/dgraph-io/gqlparser/v2/ast"
+	"github.com/dgraph-io/gqlparser/v2/validator"
 )
-
-func listTypeCheck(observers *validator.Events, addError validator.AddErrFunc) {
-	observers.OnValue(func(walker *validator.Walker, value *ast.Value) {
-		if value.Definition == nil || value.ExpectedType == nil {
-			return
-		}
-
-		if value.Kind == ast.Variable {
-			return
-		}
-
-		// ExpectedType.Elem will be not nil if it is of list type. Otherwise
-		// it will be nil. So it's safe to say that value.Kind should be list
-		if !(value.ExpectedType.Elem != nil && value.Kind != ast.ListValue) {
-			return
-		}
-
-		addError(validator.Message("Value provided %s is incompatible with expected type %s",
-			value.String(),
-			value.ExpectedType.String()), validator.At(value.Position))
-	})
-}
 
 func variableTypeCheck(observers *validator.Events, addError validator.AddErrFunc) {
 	observers.OnValue(func(walker *validator.Walker, value *ast.Value) {
@@ -53,7 +34,6 @@ func variableTypeCheck(observers *validator.Events, addError validator.AddErrFun
 		if value.Kind != ast.Variable {
 			return
 		}
-
 		if value.VariableDefinition.Type.IsCompatible(value.ExpectedType) {
 			return
 		}
@@ -88,4 +68,70 @@ func directiveArgumentsCheck(observers *validator.Events, addError validator.Add
 		}
 
 	})
+}
+
+func intRangeCheck(observers *validator.Events, addError validator.AddErrFunc) {
+	observers.OnValue(func(walker *validator.Walker, value *ast.Value) {
+		if value.Definition == nil || value.ExpectedType == nil || value.Kind == ast.Variable || value.Kind == ast.ListValue {
+			return
+		}
+
+		switch value.Definition.Name {
+		case "Int":
+			if value.Kind == ast.NullValue {
+				return
+			}
+			_, err := strconv.ParseInt(value.Raw, 10, 32)
+			if err != nil {
+				if errors.Is(err, strconv.ErrRange) {
+					addError(validator.Message("Out of range value '%s', for type `%s`",
+						value.Raw, value.Definition.Name), validator.At(value.Position))
+				} else {
+					addError(validator.Message("%s", err), validator.At(value.Position))
+				}
+			}
+		case "Int64":
+			if value.Kind == ast.IntValue {
+				_, err := strconv.ParseInt(value.Raw, 10, 64)
+				if err != nil {
+					if errors.Is(err, strconv.ErrRange) {
+						addError(validator.Message("Out of range value '%s', for type `%s`",
+							value.Raw, value.Definition.Name), validator.At(value.Position))
+					} else {
+						addError(validator.Message("%s", err), validator.At(value.Position))
+					}
+				}
+				value.Kind = ast.StringValue
+			} else {
+				addError(validator.Message("Type mismatched for Value `%s`, expected: Int64, got: '%s'", value.Raw,
+					valueKindToString(value.Kind)), validator.At(value.Position))
+			}
+		}
+	})
+}
+
+func valueKindToString(valKind ast.ValueKind) string {
+	switch valKind {
+	case ast.Variable:
+		return "Variable"
+	case ast.StringValue:
+		return "String"
+	case ast.IntValue:
+		return "Int"
+	case ast.FloatValue:
+		return "Float"
+	case ast.BlockValue:
+		return "Block"
+	case ast.BooleanValue:
+		return "Boolean"
+	case ast.NullValue:
+		return "Null"
+	case ast.EnumValue:
+		return "Enum"
+	case ast.ListValue:
+		return "List"
+	case ast.ObjectValue:
+		return "Object"
+	}
+	return ""
 }

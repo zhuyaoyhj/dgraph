@@ -68,13 +68,29 @@ const (
 				"description": ""
             },
             {
+                "name": "qualification",
+				"description": ""
+            },
+            {
                 "name": "country",
 				"description": ""
             },
             {
                 "name": "posts",
 				"description": ""
-            }
+            },
+            {
+                "name": "bio",
+				"description": ""
+            },
+            {
+                "name": "rank",
+				"description": ""
+            },
+			{
+				"name": "postsAggregate",
+				"description": ""
+			}
 		],
 		"enumValues":[]
 	}, "__typename" : "Query" }`

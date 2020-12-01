@@ -28,6 +28,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dgraph-io/dgraph/graphql/schema"
+	"github.com/golang/glog"
+
 	"github.com/dgraph-io/dgo/v200"
 	"github.com/dgraph-io/dgo/v200/protos/api"
 	"github.com/dgraph-io/dgraph/testutil"
@@ -37,17 +40,14 @@ import (
 	"google.golang.org/grpc"
 )
 
-const (
-	GraphqlURL      = "http://localhost:8180/graphql"
-	graphqlAdminURL = "http://localhost:8180/admin"
-	AlphagRPC       = "localhost:9180"
+var (
+	GraphqlURL      = "http://" + testutil.ContainerAddr("alpha1", 8080) + "/graphql"
+	GraphqlAdminURL = "http://" + testutil.ContainerAddr("alpha1", 8080) + "/admin"
+	AlphagRPC       = testutil.ContainerAddr("alpha1", 9080)
 
-	adminDgraphHealthURL           = "http://localhost:8280/health?all"
-	adminDgraphStateURL            = "http://localhost:8280/state"
-	graphqlAdminTestURL            = "http://localhost:8280/graphql"
-	graphqlAdminTestAdminURL       = "http://localhost:8280/admin"
-	graphqlAdminTestAdminSchemaURL = "http://localhost:8280/admin/schema"
-	alphaAdminTestgRPC             = "localhost:9280"
+	adminDgraphHealthURL           = "http://" + testutil.ContainerAddr("alpha1", 8080) + "/health?all"
+	adminDgraphStateURL            = "http://" + testutil.ContainerAddr("alpha1", 8080) + "/state"
+	graphqlAdminTestAdminSchemaURL = "http://" + testutil.ContainerAddr("alpha1", 8080) + "/admin/schema"
 )
 
 // GraphQLParams is parameters for the constructing a GraphQL query - that's
@@ -82,9 +82,10 @@ const (
 // header to the same.
 
 type GraphQLParams struct {
-	Query         string                 `json:"query"`
-	OperationName string                 `json:"operationName"`
-	Variables     map[string]interface{} `json:"variables"`
+	Query         string                    `json:"query"`
+	OperationName string                    `json:"operationName"`
+	Variables     map[string]interface{}    `json:"variables"`
+	Extensions    *schema.RequestExtensions `json:"extensions,omitempty"`
 	acceptGzip    bool
 	gzipEncoding  bool
 	Headers       http.Header
@@ -100,6 +101,21 @@ type GraphQLResponse struct {
 	Extensions map[string]interface{} `json:"extensions,omitempty"`
 }
 
+type Tweets struct {
+	Id        string `json:"id,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Timestamp string `json:"timestamp,omitempty"`
+	User      *User  `json:"user,omitempty"`
+}
+
+type User struct {
+	Username string `json:"username,omitempty"`
+	Age      uint64 `json:"age,omitempty"`
+	IsPublic bool   `json:"isPublic,omitempty"`
+	Disabled bool   `json:"disabled,omitempty"`
+	Password string `json:"password,omitempty"`
+}
+
 type country struct {
 	ID     string   `json:"id,omitempty"`
 	Name   string   `json:"name,omitempty"`
@@ -107,12 +123,13 @@ type country struct {
 }
 
 type author struct {
-	ID         string     `json:"id,omitempty"`
-	Name       string     `json:"name,omitempty"`
-	Dob        *time.Time `json:"dob,omitempty"`
-	Reputation float32    `json:"reputation,omitempty"`
-	Country    *country   `json:"country,omitempty"`
-	Posts      []*post    `json:"posts,omitempty"`
+	ID            string     `json:"id,omitempty"`
+	Name          string     `json:"name,omitempty"`
+	Qualification string     `json:"qualification,omitempty"`
+	Dob           *time.Time `json:"dob,omitempty"`
+	Reputation    float32    `json:"reputation,omitempty"`
+	Country       *country   `json:"country,omitempty"`
+	Posts         []*post    `json:"posts,omitempty"`
 }
 
 type user struct {
@@ -125,6 +142,7 @@ type post struct {
 	Title       string    `json:"title,omitempty"`
 	Text        string    `json:"text,omitempty"`
 	Tags        []string  `json:"tags,omitempty"`
+	Topic       string    `json:"topic,omitempty"`
 	NumLikes    int       `json:"numLikes,omitempty"`
 	NumViews    int64     `json:"numViews,omitempty"`
 	IsPublished bool      `json:"isPublished,omitempty"`
@@ -179,6 +197,30 @@ type UserSecret struct {
 	OwnedBy string `json:"ownedBy,omitempty"`
 }
 
+type Todo struct {
+	Id    string `json:"id,omitempty"`
+	Text  string `json:"text,omitempty"`
+	Owner string `json:"owner,omitempty"`
+}
+
+func (twt *Tweets) DeleteByID(t *testing.T, user string, metaInfo *testutil.AuthMeta) {
+	getParams := &GraphQLParams{
+		Headers: GetJWT(t, user, "", metaInfo),
+		Query: `
+			mutation delTweets ($filter : TweetsFilter!){
+			  	deleteTweets (filter: $filter) {
+					numUids
+			  	}
+			}
+		`,
+		Variables: map[string]interface{}{"filter": map[string]interface{}{
+			"id": map[string]interface{}{"eq": twt.Id},
+		}},
+	}
+	gqlResponse := getParams.ExecuteAsPost(t, GraphqlURL)
+	require.Nil(t, gqlResponse.Errors)
+}
+
 func (us *UserSecret) Delete(t *testing.T, user, role string, metaInfo *testutil.AuthMeta) {
 	getParams := &GraphQLParams{
 		Headers: GetJWT(t, user, role, metaInfo),
@@ -195,19 +237,35 @@ func (us *UserSecret) Delete(t *testing.T, user, role string, metaInfo *testutil
 	require.Nil(t, gqlResponse.Errors)
 }
 
+func addSchemaAndData(schema, data []byte, client *dgo.Dgraph) {
+	for {
+		err := addSchema(GraphqlAdminURL, string(schema))
+		if err == nil {
+			break
+		}
+
+		if strings.Contains(err.Error(), "errIndexingInProgress") ||
+			strings.Contains(err.Error(), "is already running") {
+			glog.V(2).Infof("Got error while addSchemaAndData: %v. Retrying...\n", err)
+			time.Sleep(time.Second)
+			continue
+		}
+
+		x.Panic(err)
+	}
+
+	err := maybePopulateData(client, data)
+	if err != nil {
+		x.Panic(err)
+	}
+}
+
 func BootstrapServer(schema, data []byte) {
-	err := checkGraphQLStarted(graphqlAdminURL)
+	err := CheckGraphQLStarted(GraphqlAdminURL)
 	if err != nil {
 		x.Panic(errors.Errorf(
 			"Waited for GraphQL test server to become available, but it never did.\n"+
 				"Got last error %+v", err.Error()))
-	}
-
-	err = checkGraphQLStarted(graphqlAdminTestAdminURL)
-	if err != nil {
-		x.Panic(errors.Errorf(
-			"Waited for GraphQL AdminTest server to become available, "+
-				"but it never did.\n Got last error: %+v", err.Error()))
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -218,15 +276,7 @@ func BootstrapServer(schema, data []byte) {
 	}
 	client := dgo.NewDgraphClient(api.NewDgraphClient(d))
 
-	err = addSchema(graphqlAdminURL, string(schema))
-	if err != nil {
-		x.Panic(err)
-	}
-
-	err = maybePopulateData(client, data)
-	if err != nil {
-		x.Panic(err)
-	}
+	addSchemaAndData(schema, data, client)
 	if err = d.Close(); err != nil {
 		x.Panic(err)
 	}
@@ -247,6 +297,7 @@ func RunAll(t *testing.T) {
 
 	// header tests
 	t.Run("touched uids header", touchedUidsHeader)
+	t.Run("cache-control header", cacheControlHeader)
 
 	// encoding
 	t.Run("gzip compression", gzipCompression)
@@ -265,6 +316,9 @@ func RunAll(t *testing.T) {
 	t.Run("multiple search indexes", multipleSearchIndexes)
 	t.Run("multiple search indexes wrong field", multipleSearchIndexesWrongField)
 	t.Run("hash search", hashSearch)
+	t.Run("in filter", inFilter)
+	t.Run("between filter", betweenFilter)
+	t.Run("deep between filter", deepBetweenFilter)
 	t.Run("deep filter", deepFilter)
 	t.Run("deep has filter", deepHasFilter)
 	t.Run("many queries", manyQueries)
@@ -303,7 +357,20 @@ func RunAll(t *testing.T) {
 	t.Run("query post with author", queryPostWithAuthor)
 	t.Run("queries have extensions", queriesHaveExtensions)
 	t.Run("alias works for queries", queryWithAlias)
+	t.Run("multiple aliases for same field in query", queryWithMultipleAliasOfSameField)
 	t.Run("cascade directive", queryWithCascade)
+	t.Run("filter in queries with array for AND/OR", filterInQueriesWithArrayForAndOr)
+	t.Run("query geo near filter", queryGeoNearFilter)
+	t.Run("persisted query", persistedQuery)
+	t.Run("query count without filter", queryCountWithoutFilter)
+	t.Run("query count with filter", queryCountWithFilter)
+	t.Run("query count with alias", queryCountWithAlias)
+	t.Run("query count at child level", queryCountAtChildLevel)
+	t.Run("query count at child level with filter", queryCountAtChildLevelWithFilter)
+	t.Run("query count at child level with multiple alias", queryCountAtChildLevelWithMultipleAlias)
+	t.Run("query at child level with multiple alias on scalar field", queryChildLevelWithMultipleAliasOnScalarField)
+	t.Run("query count and other fields at child level", queryCountAndOtherFieldsAtChildLevel)
+	t.Run("checkUserPassword query", passwordTest)
 
 	// mutation tests
 	t.Run("add mutation", addMutation)
@@ -329,12 +396,13 @@ func RunAll(t *testing.T) {
 	t.Run("add multiple mutations", testMultipleMutations)
 	t.Run("deep XID mutations", deepXIDMutations)
 	t.Run("three level xid", testThreeLevelXID)
+	t.Run("nested add mutation with @hasInverse", nestedAddMutationWithHasInverse)
+	t.Run("add mutation with @hasInverse overrides correctly", addMutationWithHasInverseOverridesCorrectly)
 	t.Run("error in multiple mutations", addMultipleMutationWithOneError)
 	t.Run("dgraph directive with reverse edge adds data correctly",
 		addMutationWithReverseDgraphEdge)
 	t.Run("numUids test", testNumUids)
 	t.Run("empty delete", mutationEmptyDelete)
-	t.Run("password in mutation", passwordTest)
 	t.Run("duplicate xid in single mutation", deepMutationDuplicateXIDsSameObjectTest)
 	t.Run("query typename in mutation payload", queryTypenameInMutationPayload)
 	t.Run("ensure alias in mutation payload", ensureAliasInMutationPayload)
@@ -342,19 +410,34 @@ func RunAll(t *testing.T) {
 	t.Run("alias works for mutations", mutationsWithAlias)
 	t.Run("three level deep", threeLevelDeepMutation)
 	t.Run("update mutation without set & remove", updateMutationWithoutSetRemove)
+	t.Run("Input coercing for int64 type", int64BoundaryTesting)
+	t.Run("List of integers", intWithList)
 	t.Run("Check cascade with mutation without ID field", checkCascadeWithMutationWithoutIDField)
+	t.Run("Geo - Point type", mutationPointType)
+	t.Run("Geo - Polygon type", mutationPolygonType)
+	t.Run("Geo - MultiPolygon type", mutationMultiPolygonType)
+	t.Run("filter in mutations with array for AND/OR", filterInMutationsWithArrayForAndOr)
+	t.Run("filter in update mutations with array for AND/OR", filterInUpdateMutationsWithFilterAndOr)
 
 	// error tests
 	t.Run("graphql completion on", graphQLCompletionOn)
 	t.Run("request validation errors", requestValidationErrors)
 	t.Run("panic catcher", panicCatcher)
 	t.Run("deep mutation errors", deepMutationErrors)
+	t.Run("not generated query, mutation using generate directive", notGeneratedAPIErrors)
 
 	// fragment tests
 	t.Run("fragment in mutation", fragmentInMutation)
 	t.Run("fragment in query", fragmentInQuery)
 	t.Run("fragment in query on Interface", fragmentInQueryOnInterface)
+	t.Run("fragment in query on union", fragmentInQueryOnUnion)
 	t.Run("fragment in query on Object", fragmentInQueryOnObject)
+
+	// lambda tests
+	t.Run("lambda on type field", lambdaOnTypeField)
+	t.Run("lambda on interface field", lambdaOnInterfaceField)
+	t.Run("lambda on query using dql", lambdaOnQueryUsingDql)
+	t.Run("lambda on mutation using graphql", lambdaOnMutationUsingGraphQL)
 }
 
 // RunCorsTest test all cors related tests.
@@ -402,12 +485,12 @@ func gzipCompressionHeader(t *testing.T) {
 		}`,
 	}
 
-	req, err := queryCountry.createGQLPost(GraphqlURL)
+	req, err := queryCountry.CreateGQLPost(GraphqlURL)
 	require.NoError(t, err)
 
 	req.Header.Set("Content-Encoding", "gzip")
 
-	resData, err := runGQLRequest(req)
+	resData, err := RunGQLRequest(req)
 	require.NoError(t, err)
 
 	var result *GraphQLResponse
@@ -429,11 +512,11 @@ func gzipCompressionNoHeader(t *testing.T) {
 		gzipEncoding: true,
 	}
 
-	req, err := queryCountry.createGQLPost(GraphqlURL)
+	req, err := queryCountry.CreateGQLPost(GraphqlURL)
 	require.NoError(t, err)
 
 	req.Header.Del("Content-Encoding")
-	resData, err := runGQLRequest(req)
+	resData, err := RunGQLRequest(req)
 	require.NoError(t, err)
 
 	var result *GraphQLResponse
@@ -472,7 +555,7 @@ func (params *GraphQLParams) Execute(t require.TestingT, req *http.Request) *Gra
 	for h := range params.Headers {
 		req.Header.Set(h, params.Headers.Get(h))
 	}
-	res, err := runGQLRequest(req)
+	res, err := RunGQLRequest(req)
 	require.NoError(t, err)
 
 	var result *GraphQLResponse
@@ -490,7 +573,7 @@ func (params *GraphQLParams) Execute(t require.TestingT, req *http.Request) *Gra
 // ExecuteAsPost builds a HTTP POST request from the GraphQL input structure
 // and executes the request to url.
 func (params *GraphQLParams) ExecuteAsPost(t require.TestingT, url string) *GraphQLResponse {
-	req, err := params.createGQLPost(url)
+	req, err := params.CreateGQLPost(url)
 	require.NoError(t, err)
 
 	return params.Execute(t, req)
@@ -571,7 +654,7 @@ func (params *GraphQLParams) buildPostRequest(url string, body []byte, contentTy
 	return req, nil
 }
 
-func (params *GraphQLParams) createGQLPost(url string) (*http.Request, error) {
+func (params *GraphQLParams) CreateGQLPost(url string) (*http.Request, error) {
 	body, err := json.Marshal(params)
 	if err != nil {
 		return nil, err
@@ -584,8 +667,8 @@ func (params *GraphQLParams) createApplicationGQLPost(url string) (*http.Request
 	return params.buildPostRequest(url, []byte(params.Query), "application/graphql")
 }
 
-// runGQLRequest runs a HTTP GraphQL request and returns the data or any errors.
-func runGQLRequest(req *http.Request) ([]byte, error) {
+// RunGQLRequest runs a HTTP GraphQL request and returns the data or any errors.
+func RunGQLRequest(req *http.Request) ([]byte, error) {
 	client := &http.Client{Timeout: 50 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -671,7 +754,7 @@ func allCountriesAdded() ([]*country, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := runGQLRequest(req)
+	resp, err := RunGQLRequest(req)
 	if err != nil {
 		return nil, errors.Wrap(err, "error running GraphQL query")
 	}
@@ -689,22 +772,17 @@ func allCountriesAdded() ([]*country, error) {
 	return result.Data.QueryCountry, nil
 }
 
-func checkGraphQLStarted(url string) error {
+func CheckGraphQLStarted(url string) error {
 	var err error
-	retries := 6
-	sleep := 10 * time.Second
-
 	// Because of how GraphQL starts (it needs to read the schema from Dgraph),
 	// there's no guarantee that GraphQL is available by now.  So we
 	// need to try and connect and potentially retry a few times.
-	for retries > 0 {
-		retries--
-
+	for i := 0; i < 60; i++ {
 		_, err = hasCurrentGraphQLSchema(url)
 		if err == nil {
 			return nil
 		}
-		time.Sleep(sleep)
+		time.Sleep(time.Second)
 	}
 	return err
 }
@@ -714,12 +792,12 @@ func hasCurrentGraphQLSchema(url string) (bool, error) {
 	schemaQry := &GraphQLParams{
 		Query: `query { getGQLSchema { schema } }`,
 	}
-	req, err := schemaQry.createGQLPost(url)
+	req, err := schemaQry.CreateGQLPost(url)
 	if err != nil {
 		return false, errors.Wrap(err, "while creating gql post")
 	}
 
-	res, err := runGQLRequest(req)
+	res, err := RunGQLRequest(req)
 	if err != nil {
 		return false, errors.Wrap(err, "error running GraphQL query")
 	}
@@ -763,12 +841,12 @@ func addSchema(url, schema string) error {
 		}`,
 		Variables: map[string]interface{}{"sch": schema},
 	}
-	req, err := add.createGQLPost(url)
+	req, err := add.CreateGQLPost(url)
 	if err != nil {
 		return errors.Wrap(err, "error creating GraphQL query")
 	}
 
-	resp, err := runGQLRequest(req)
+	resp, err := RunGQLRequest(req)
 	if err != nil {
 		return errors.Wrap(err, "error running GraphQL query")
 	}
@@ -806,7 +884,7 @@ func addSchemaThroughAdminSchemaEndpt(url, schema string) error {
 		return errors.Wrap(err, "error running GraphQL query")
 	}
 
-	resp, err := runGQLRequest(req)
+	resp, err := RunGQLRequest(req)
 	if err != nil {
 		return errors.Wrap(err, "error running GraphQL query")
 	}
@@ -847,4 +925,39 @@ func GetJWT(t *testing.T, user, role string, metaInfo *testutil.AuthMeta) http.H
 	h := make(http.Header)
 	h.Add(metaInfo.Header, jwtToken)
 	return h
+}
+
+func GetJWTForInterfaceAuth(t *testing.T, user, role string, ans bool, metaInfo *testutil.AuthMeta) http.Header {
+	metaInfo.AuthVars = map[string]interface{}{}
+	if user != "" {
+		metaInfo.AuthVars["USER"] = user
+	}
+
+	if role != "" {
+		metaInfo.AuthVars["ROLE"] = role
+	}
+
+	metaInfo.AuthVars["ANS"] = ans
+
+	require.NotNil(t, metaInfo.PrivateKeyPath)
+	jwtToken, err := metaInfo.GetSignedToken(metaInfo.PrivateKeyPath, 300*time.Second)
+	require.NoError(t, err)
+	h := make(http.Header)
+	h.Add(metaInfo.Header, jwtToken)
+	return h
+}
+
+func BootstrapAuthData() ([]byte, []byte) {
+	schemaFile := "../auth/schema.graphql"
+	schema, err := ioutil.ReadFile(schemaFile)
+	if err != nil {
+		panic(err)
+	}
+
+	jsonFile := "../auth/test_data.json"
+	data, err := ioutil.ReadFile(jsonFile)
+	if err != nil {
+		panic(errors.Wrapf(err, "Unable to read file %s.", jsonFile))
+	}
+	return schema, data
 }

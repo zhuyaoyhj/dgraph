@@ -26,6 +26,8 @@ import (
 	"time"
 
 	"github.com/gogo/protobuf/jsonpb"
+	"github.com/pkg/errors"
+	"google.golang.org/grpc"
 
 	"github.com/dgraph-io/dgo/v200"
 	"github.com/dgraph-io/dgo/v200/protos/api"
@@ -35,7 +37,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc"
 )
 
 const (
@@ -54,9 +55,31 @@ const (
             "upsert": true
         },
         {
+            "predicate": "dgraph.drop.op",
+            "type": "string"
+        },
+        {
+            "predicate":"dgraph.graphql.p_query",
+            "type":"string"
+        },
+        {
+            "predicate":"dgraph.graphql.p_sha256hash",
+            "type":"string",
+            "index":true,
+            "tokenizer":["exact"]
+        },
+        {
             "predicate": "dgraph.graphql.schema",
             "type": "string"
         },
+        {
+            "predicate": "dgraph.graphql.schema_created_at",
+            "type": "datetime"
+		},
+        {
+            "predicate": "dgraph.graphql.schema_history",
+            "type": "string"
+		},
         {
             "predicate": "dgraph.graphql.xid",
             "type": "string",
@@ -86,6 +109,27 @@ const (
                 }
             ],
             "name": "dgraph.graphql"
+        },
+        {
+            "fields": [
+                {
+                    "name": "dgraph.graphql.schema_history"
+                },{
+                    "name": "dgraph.graphql.schema_created_at"
+                }
+            ],
+            "name": "dgraph.graphql.history"
+        },
+        {
+            "fields": [
+                {
+                    "name": "dgraph.graphql.p_query"
+                },
+                {
+                    "name": "dgraph.graphql.p_sha256hash"
+                }
+            ],
+            "name": "dgraph.graphql.persisted_query"
         }
     ]
 }`
@@ -111,9 +155,31 @@ const (
             "upsert": true
         },
         {
+            "predicate": "dgraph.drop.op",
+            "type": "string"
+        },
+        {
+            "predicate":"dgraph.graphql.p_query",
+            "type":"string"
+        },
+        {
+            "predicate":"dgraph.graphql.p_sha256hash",
+            "type":"string",
+            "index":true,
+            "tokenizer":["exact"]
+        },
+        {
             "predicate": "dgraph.graphql.schema",
             "type": "string"
         },
+        {
+            "predicate": "dgraph.graphql.schema_created_at",
+            "type": "datetime"
+		},
+        {
+            "predicate": "dgraph.graphql.schema_history",
+            "type": "string"
+		},
         {
             "predicate": "dgraph.graphql.xid",
             "type": "string",
@@ -151,6 +217,27 @@ const (
                 }
             ],
             "name": "dgraph.graphql"
+        },
+        {
+            "fields": [
+                {
+                    "name": "dgraph.graphql.schema_history"
+                },{
+                    "name": "dgraph.graphql.schema_created_at"
+                }
+            ],
+            "name": "dgraph.graphql.history"
+        },
+        {
+            "fields": [
+                {
+                    "name": "dgraph.graphql.p_query"
+                },
+                {
+                    "name": "dgraph.graphql.p_sha256hash"
+                }
+            ],
+            "name": "dgraph.graphql.persisted_query"
         }
     ]
 }`
@@ -191,9 +278,31 @@ const (
             "upsert": true
         },
         {
+            "predicate": "dgraph.drop.op",
+            "type": "string"
+        },
+        {
+            "predicate":"dgraph.graphql.p_query",
+            "type":"string"
+        },
+        {
+            "predicate":"dgraph.graphql.p_sha256hash",
+            "type":"string",
+            "index":true,
+            "tokenizer":["exact"]
+        },
+        {
             "predicate": "dgraph.graphql.schema",
             "type": "string"
         },
+        {
+            "predicate": "dgraph.graphql.schema_created_at",
+            "type": "datetime"
+		},
+        {
+            "predicate": "dgraph.graphql.schema_history",
+            "type": "string"
+		},
         {
             "predicate": "dgraph.graphql.xid",
             "type": "string",
@@ -234,6 +343,27 @@ const (
                 }
             ],
             "name": "dgraph.graphql"
+        },
+        {
+            "fields": [
+                {
+                    "name": "dgraph.graphql.schema_history"
+                },{
+                    "name": "dgraph.graphql.schema_created_at"
+                }
+            ],
+            "name": "dgraph.graphql.history"
+        },
+        {
+            "fields": [
+                {
+                    "name": "dgraph.graphql.p_query"
+                },
+                {
+                    "name": "dgraph.graphql.p_sha256hash"
+                }
+            ],
+            "name": "dgraph.graphql.persisted_query"
         }
     ]
 }`
@@ -282,9 +412,31 @@ const (
             "upsert": true
         },
         {
+            "predicate": "dgraph.drop.op",
+            "type": "string"
+        },
+        {
+            "predicate":"dgraph.graphql.p_query",
+            "type":"string"
+        },
+        {
+            "predicate":"dgraph.graphql.p_sha256hash",
+            "type":"string",
+            "index":true,
+            "tokenizer":["exact"]
+        },
+        {
             "predicate": "dgraph.graphql.schema",
             "type": "string"
         },
+        {
+            "predicate": "dgraph.graphql.schema_created_at",
+            "type": "datetime"
+		},
+        {
+            "predicate": "dgraph.graphql.schema_history",
+            "type": "string"
+		},
         {
             "predicate": "dgraph.graphql.xid",
             "type": "string",
@@ -328,6 +480,27 @@ const (
                 }
             ],
             "name": "dgraph.graphql"
+        },
+        {
+            "fields": [
+                {
+                    "name": "dgraph.graphql.schema_history"
+                },{
+                    "name": "dgraph.graphql.schema_created_at"
+                }
+            ],
+            "name": "dgraph.graphql.history"
+        },
+        {
+            "fields": [
+                {
+                    "name": "dgraph.graphql.p_query"
+                },
+                {
+                    "name": "dgraph.graphql.p_sha256hash"
+                }
+            ],
+            "name": "dgraph.graphql.persisted_query"
         }
     ]
 }`
@@ -350,12 +523,13 @@ const (
 )
 
 func admin(t *testing.T) {
-	d, err := grpc.Dial(alphaAdminTestgRPC, grpc.WithInsecure())
+	d, err := grpc.Dial(AlphagRPC, grpc.WithInsecure())
 	require.NoError(t, err)
 
 	client := dgo.NewDgraphClient(api.NewDgraphClient(d))
+	testutil.DropAll(t, client)
 
-	hasSchema, err := hasCurrentGraphQLSchema(graphqlAdminTestAdminURL)
+	hasSchema, err := hasCurrentGraphQLSchema(GraphqlAdminURL)
 	require.NoError(t, err)
 	require.False(t, hasSchema)
 
@@ -364,6 +538,23 @@ func admin(t *testing.T) {
 	updateSchema(t, client)
 	updateSchemaThroughAdminSchemaEndpt(t, client)
 	gqlSchemaNodeHasXid(t, client)
+
+	// restore the state to the initial schema and data.
+	testutil.DropAll(t, client)
+
+	schemaFile := "schema.graphql"
+	schema, err := ioutil.ReadFile(schemaFile)
+	if err != nil {
+		panic(err)
+	}
+
+	jsonFile := "test_data.json"
+	data, err := ioutil.ReadFile(jsonFile)
+	if err != nil {
+		panic(errors.Wrapf(err, "Unable to read file %s.", jsonFile))
+	}
+
+	addSchemaAndData(schema, data, client)
 }
 
 func schemaIsInInitialState(t *testing.T, client *dgo.Dgraph) {
@@ -373,7 +564,7 @@ func schemaIsInInitialState(t *testing.T, client *dgo.Dgraph) {
 }
 
 func addGQLSchema(t *testing.T, client *dgo.Dgraph) {
-	err := addSchema(graphqlAdminTestAdminURL, firstTypes)
+	err := addSchema(GraphqlAdminURL, firstTypes)
 	require.NoError(t, err)
 
 	resp, err := client.NewReadOnlyTxn().Query(context.Background(), "schema {}")
@@ -385,7 +576,7 @@ func addGQLSchema(t *testing.T, client *dgo.Dgraph) {
 }
 
 func updateSchema(t *testing.T, client *dgo.Dgraph) {
-	err := addSchema(graphqlAdminTestAdminURL, updatedTypes)
+	err := addSchema(GraphqlAdminURL, updatedTypes)
 	require.NoError(t, err)
 
 	resp, err := client.NewReadOnlyTxn().Query(context.Background(), "schema {}")
@@ -435,7 +626,7 @@ func introspect(t *testing.T, expected string) {
 		}`,
 	}
 
-	gqlResponse := queryParams.ExecuteAsPost(t, graphqlAdminTestURL)
+	gqlResponse := queryParams.ExecuteAsPost(t, GraphqlURL)
 	RequireNoGQLErrors(t, gqlResponse)
 
 	require.JSONEq(t, expected, string(gqlResponse.Data))
@@ -457,7 +648,7 @@ func health(t *testing.T) {
         }
       }`,
 	}
-	gqlResponse := queryParams.ExecuteAsPost(t, graphqlAdminTestAdminURL)
+	gqlResponse := queryParams.ExecuteAsPost(t, GraphqlAdminURL)
 	RequireNoGQLErrors(t, gqlResponse)
 
 	var result struct {
@@ -480,6 +671,7 @@ func health(t *testing.T) {
 	opts := []cmp.Option{
 		cmpopts.IgnoreFields(pb.HealthInfo{}, "Uptime"),
 		cmpopts.IgnoreFields(pb.HealthInfo{}, "LastEcho"),
+		cmpopts.IgnoreFields(pb.HealthInfo{}, "Ongoing"),
 		cmpopts.EquateEmpty(),
 	}
 	if diff := cmp.Diff(health, result.Health, opts...); diff != "" {
@@ -497,7 +689,7 @@ func partialHealth(t *testing.T) {
             }
         }`,
 	}
-	gqlResponse := queryParams.ExecuteAsPost(t, graphqlAdminTestAdminURL)
+	gqlResponse := queryParams.ExecuteAsPost(t, GraphqlAdminURL)
 	RequireNoGQLErrors(t, gqlResponse)
 	testutil.CompareJSON(t, `{
         "health": [
@@ -526,7 +718,7 @@ func adminAlias(t *testing.T) {
             }
         }`,
 	}
-	gqlResponse := queryParams.ExecuteAsPost(t, graphqlAdminTestAdminURL)
+	gqlResponse := queryParams.ExecuteAsPost(t, GraphqlAdminURL)
 	RequireNoGQLErrors(t, gqlResponse)
 	testutil.CompareJSON(t, `{
         "dgraphHealth": [
@@ -549,7 +741,6 @@ func adminState(t *testing.T) {
 	queryParams := &GraphQLParams{
 		Query: `query {
 			state {
-				counter
 				groups {
 					id
 					members {
@@ -605,13 +796,12 @@ func adminState(t *testing.T) {
 			}
 		}`,
 	}
-	gqlResponse := queryParams.ExecuteAsPost(t, graphqlAdminTestAdminURL)
+	gqlResponse := queryParams.ExecuteAsPost(t, GraphqlAdminURL)
 	RequireNoGQLErrors(t, gqlResponse)
 
 	var result struct {
 		State struct {
-			Counter uint64
-			Groups  []struct {
+			Groups []struct {
 				Id         uint32
 				Members    []*pb.Member
 				Tablets    []*pb.Tablet
@@ -642,7 +832,6 @@ func adminState(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, jsonpb.Unmarshal(bytes.NewReader(stateRes), &state))
 
-	require.Equal(t, state.Counter, result.State.Counter)
 	for _, group := range result.State.Groups {
 		require.Contains(t, state.Groups, group.Id)
 		expectedGroup := state.Groups[group.Id]
@@ -683,7 +872,7 @@ func adminState(t *testing.T) {
 }
 
 func testCors(t *testing.T) {
-	t.Run("testing normal retrival", func(t *testing.T) {
+	t.Run("testing normal retrieval", func(t *testing.T) {
 		queryParams := &GraphQLParams{
 			Query: `query{
                 getAllowedCORSOrigins{
@@ -691,7 +880,7 @@ func testCors(t *testing.T) {
                 }
               }`,
 		}
-		gqlResponse := queryParams.ExecuteAsPost(t, graphqlAdminURL)
+		gqlResponse := queryParams.ExecuteAsPost(t, GraphqlAdminURL)
 		RequireNoGQLErrors(t, gqlResponse)
 		require.JSONEq(t, ` {
             "getAllowedCORSOrigins": {
@@ -710,7 +899,7 @@ func testCors(t *testing.T) {
                 }
               }`,
 		}
-		gqlResponse := queryParams.ExecuteAsPost(t, graphqlAdminURL)
+		gqlResponse := queryParams.ExecuteAsPost(t, GraphqlAdminURL)
 		RequireNoGQLErrors(t, gqlResponse)
 		require.JSONEq(t, ` {
             "replaceAllowedCORSOrigins": {
@@ -721,7 +910,7 @@ func testCors(t *testing.T) {
           }`, string(gqlResponse.Data))
 	})
 
-	t.Run("retrive mutated cors", func(t *testing.T) {
+	t.Run("retrieve mutated cors", func(t *testing.T) {
 		queryParams := &GraphQLParams{
 			Query: `query{
                 getAllowedCORSOrigins{
@@ -729,7 +918,7 @@ func testCors(t *testing.T) {
                 }
               }`,
 		}
-		gqlResponse := queryParams.ExecuteAsPost(t, graphqlAdminURL)
+		gqlResponse := queryParams.ExecuteAsPost(t, GraphqlAdminURL)
 		RequireNoGQLErrors(t, gqlResponse)
 		require.JSONEq(t, ` {
             "getAllowedCORSOrigins": {
@@ -772,7 +961,7 @@ func testCors(t *testing.T) {
                 }
               }`,
 		}
-		gqlResponse := queryParams.ExecuteAsPost(t, graphqlAdminURL)
+		gqlResponse := queryParams.ExecuteAsPost(t, GraphqlAdminURL)
 		RequireNoGQLErrors(t, gqlResponse)
 		require.JSONEq(t, ` {
             "replaceAllowedCORSOrigins": {

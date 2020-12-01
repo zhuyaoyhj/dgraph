@@ -43,6 +43,7 @@ import (
 	bopt "github.com/dgraph-io/badger/v2/options"
 	"github.com/dgraph-io/dgo/v200"
 	"github.com/dgraph-io/dgo/v200/protos/api"
+	"github.com/dgraph-io/ristretto/z"
 	"github.com/dgryski/go-farm"
 
 	"github.com/dgraph-io/dgraph/chunker"
@@ -73,6 +74,7 @@ type options struct {
 	bufferSize      int
 	ludicrousMode   bool
 	upsertPredicate string
+	tmpDir          string
 	key             x.SensitiveByteSlice
 }
 
@@ -143,24 +145,25 @@ func init() {
 	flag.IntP("batch", "b", 1000,
 		"Number of N-Quads to send as part of a mutation.")
 	flag.StringP("xidmap", "x", "", "Directory to store xid to uid mapping")
-	flag.StringP("auth_token", "t", "",
-		"The auth token passed to the server for Alter operation of the schema file. If used with --slash_grpc_endpoint, then this "+
+	flag.StringP("auth-token", "t", "",
+		"The auth token passed to the server for Alter operation of the schema file. If used with --slash-grpc-endpoint, then this "+
 			"should be set to the API token issued by Slash GraphQL")
-	flag.String("slash_grpc_endpoint", "", "Path to Slash GraphQL GRPC endpoint. If --slash_grpc_endpoint is set, "+
+	flag.String("slash-grpc-endpoint", "", "Path to Slash GraphQL GRPC endpoint. If --slash-grpc-endpoint is set, "+
 		"all other TLS options and connection options will be ignored")
-	flag.BoolP("use_compression", "C", false,
+	flag.BoolP("use-compression", "C", false,
 		"Enable compression on connection to alpha server")
-	flag.Bool("new_uids", false,
+	flag.Bool("new-uids", false,
 		"Ignore UIDs in load files and assign new ones.")
 	flag.String("http", "localhost:6060", "Address to serve http (pprof).")
 	flag.Bool("verbose", false, "Run the live loader in verbose mode")
 	flag.StringP("user", "u", "", "Username if login is required.")
 	flag.StringP("password", "p", "", "Password of the user.")
-	flag.StringP("bufferSize", "m", "100", "Buffer for each thread")
-	flag.Bool("ludicrous_mode", false, "Run live loader in ludicrous mode (Should "+
+	flag.StringP("buffer-size", "m", "100", "Buffer for each thread")
+	flag.Bool("ludicrous-mode", false, "Run live loader in ludicrous mode (Should "+
 		"only be done when alpha is under ludicrous mode)")
-	flag.StringP("upsertPredicate", "U", "", "run in upsertPredicate mode. the value would "+
+	flag.StringP("upsert-predicate", "U", "", "run in upsert-predicate mode. the value would "+
 		"be used to store blank nodes as an xid")
+	flag.String("tmp", "t", "Directory to store temporary buffers.")
 
 	// Encryption and Vault options
 	enc.RegisterFlags(flag)
@@ -523,32 +526,36 @@ func setup(opts batchMutationOptions, dc *dgo.Dgraph, conf *viper.Viper) *loader
 
 		var err error
 		db, err = badger.Open(badger.DefaultOptions(opt.clientDir).
-			WithTableLoadingMode(bopt.MemoryMap).
 			WithCompression(bopt.ZSTD).
 			WithSyncWrites(false).
-			WithLoadBloomsOnOpen(false).
+			WithBlockCacheSize(100 * (1 << 20)).
+			WithIndexCacheSize(100 * (1 << 20)).
 			WithZSTDCompressionLevel(3))
 		x.Checkf(err, "Error while creating badger KV posting store")
 
 	}
 
 	dialOpts := []grpc.DialOption{}
-	if conf.GetString("slash_grpc_endpoint") != "" && conf.IsSet("auth_token") {
-		dialOpts = append(dialOpts, x.WithAuthorizationCredentials(conf.GetString("auth_token")))
+	if conf.GetString("slash-grpc-endpoint") != "" && conf.IsSet("auth-token") {
+		dialOpts = append(dialOpts, x.WithAuthorizationCredentials(conf.GetString("auth-token")))
 	}
 
 	var tlsConfig *tls.Config = nil
-	if conf.GetString("slash_grpc_endpoint") != "" {
+	if conf.GetString("slash-grpc-endpoint") != "" {
 		var tlsErr error
-		tlsConfig, tlsErr = x.SlashTLSConfig(conf.GetString("slash_grpc_endpoint"))
+		tlsConfig, tlsErr = x.SlashTLSConfig(conf.GetString("slash-grpc-endpoint"))
 		x.Checkf(tlsErr, "Unable to generate TLS Cert Pool")
+	} else {
+		var tlsErr error
+		tlsConfig, tlsErr = x.LoadClientTLSConfigForInternalPort(conf)
+		x.Check(tlsErr)
 	}
 
 	// compression with zero server actually makes things worse
 	connzero, err := x.SetupConnection(opt.zero, tlsConfig, false, dialOpts...)
 	x.Checkf(err, "Unable to connect to zero, Is it running at %s?", opt.zero)
 
-	alloc := xidmap.New(connzero, db)
+	alloc := xidmap.New(connzero, db, "")
 	l := &loader{
 		opts:      opts,
 		dc:        dc,
@@ -571,8 +578,8 @@ func setup(opts batchMutationOptions, dc *dgo.Dgraph, conf *viper.Viper) *loader
 
 func run() error {
 	var zero string
-	if Live.Conf.GetString("slash_grpc_endpoint") != "" {
-		zero = Live.Conf.GetString("slash_grpc_endpoint")
+	if Live.Conf.GetString("slash-grpc-endpoint") != "" {
+		zero = Live.Conf.GetString("slash-grpc-endpoint")
 	} else {
 		zero = Live.Conf.GetString("zero")
 	}
@@ -587,15 +594,19 @@ func run() error {
 		concurrent:      Live.Conf.GetInt("conc"),
 		batchSize:       Live.Conf.GetInt("batch"),
 		clientDir:       Live.Conf.GetString("xidmap"),
-		authToken:       Live.Conf.GetString("auth_token"),
-		useCompression:  Live.Conf.GetBool("use_compression"),
-		newUids:         Live.Conf.GetBool("new_uids"),
+		authToken:       Live.Conf.GetString("auth-token"),
+		useCompression:  Live.Conf.GetBool("use-compression"),
+		newUids:         Live.Conf.GetBool("new-uids"),
 		verbose:         Live.Conf.GetBool("verbose"),
 		httpAddr:        Live.Conf.GetString("http"),
-		bufferSize:      Live.Conf.GetInt("bufferSize"),
-		ludicrousMode:   Live.Conf.GetBool("ludicrous_mode"),
-		upsertPredicate: Live.Conf.GetString("upsertPredicate"),
+		bufferSize:      Live.Conf.GetInt("buffer-size"),
+		ludicrousMode:   Live.Conf.GetBool("ludicrous-mode"),
+		upsertPredicate: Live.Conf.GetString("upsert-predicate"),
+		tmpDir:          Live.Conf.GetString("tmp"),
 	}
+
+	z.SetTmpDir(opt.tmpDir)
+
 	if opt.key, err = enc.ReadKey(Live.Conf); err != nil {
 		fmt.Printf("unable to read key %v", err)
 		return err
@@ -614,6 +625,9 @@ func run() error {
 		MaxRetries:    math.MaxUint32,
 		bufferSize:    opt.bufferSize,
 	}
+
+	// Create directory for temporary buffers.
+	x.Check(os.MkdirAll(opt.tmpDir, 0700))
 
 	dg, closeFunc := x.GetDgraphClient(Live.Conf, true)
 	defer closeFunc()
@@ -693,10 +707,10 @@ func run() error {
 	fmt.Printf("Time spent                   : %v\n", c.Elapsed)
 	fmt.Printf("N-Quads processed per second : %d\n", rate)
 
+	if err := l.alloc.Flush(); err != nil {
+		return err
+	}
 	if l.db != nil {
-		if err := l.alloc.Flush(); err != nil {
-			return err
-		}
 		if err := l.db.Close(); err != nil {
 			return err
 		}

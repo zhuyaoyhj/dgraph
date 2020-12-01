@@ -23,6 +23,9 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
+	"runtime/debug"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -36,15 +39,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const (
-	groupOneServer        = "http://localhost:8180/graphql"
-	groupOneAdminServer   = "http://localhost:8180/admin"
-	groupOnegRPC          = "localhost:9180"
-	groupTwoServer        = "http://localhost:8182/graphql"
-	groupTwoAdminServer   = "http://localhost:8182/admin"
-	groupThreeServer      = "http://localhost:8183/graphql"
-	groupThreeAdminServer = "http://localhost:8183/admin"
+var (
+	groupOneServer        = "http://" + testutil.ContainerAddr("alpha1", 8080) + "/graphql"
+	groupOneAdminServer   = "http://" + testutil.ContainerAddr("alpha1", 8080) + "/admin"
+	groupOnegRPC          = testutil.SockAddr
+	groupTwoServer        = "http://" + testutil.ContainerAddr("alpha2", 8080) + "/graphql"
+	groupTwoAdminServer   = "http://" + testutil.ContainerAddr("alpha2", 8080) + "/admin"
+	groupThreeServer      = "http://" + testutil.ContainerAddr("alpha3", 8080) + "/graphql"
+	groupThreeAdminServer = "http://" + testutil.ContainerAddr("alpha3", 8080) + "/admin"
 )
+
+func requireNoErrors(t *testing.T, resp *common.GraphQLResponse) {
+	if len(resp.Errors) > 0 {
+		t.Logf("Got errors: %s\n", resp.Errors.Error())
+		debug.PrintStack()
+		t.FailNow()
+	}
+}
 
 // This test is supposed to test the graphql schema subscribe feature. Whenever schema is updated
 // in a dgraph alpha for one group, that update should also be propagated to alpha nodes in other
@@ -70,17 +81,31 @@ func TestSchemaSubscribe(t *testing.T) {
 		Query: introspectionQuery,
 	}
 
-	expectedResult := `{"__type":{"name":"Author","fields":[{"name":"id"},{"name":"name"}]}}`
-	introspectionResult := introspect.ExecuteAsPost(t, groupOneServer)
-	require.Nil(t, introspectionResult.Errors)
+	expectedResult :=
+		`{
+			"__type": {
+				"name":"Author",
+				"fields": [
+					{
+						"name": "id"
+					},
+					{
+						"name": "name"
+					}
+				]
+			}
+		}`
+
+	introspectionResult := runIntrospectWithRetryIfNecessary(t, introspect, groupOneServer)
+	requireNoErrors(t, introspectionResult)
 	testutil.CompareJSON(t, expectedResult, string(introspectionResult.Data))
 
-	introspectionResult = introspect.ExecuteAsPost(t, groupTwoServer)
-	require.Nil(t, introspectionResult.Errors)
+	introspectionResult = runIntrospectWithRetryIfNecessary(t, introspect, groupTwoServer)
+	requireNoErrors(t, introspectionResult)
 	testutil.CompareJSON(t, expectedResult, string(introspectionResult.Data))
 
-	introspectionResult = introspect.ExecuteAsPost(t, groupThreeServer)
-	require.Nil(t, introspectionResult.Errors)
+	introspectionResult = runIntrospectWithRetryIfNecessary(t, introspect, groupThreeServer)
+	requireNoErrors(t, introspectionResult)
 	testutil.CompareJSON(t, expectedResult, string(introspectionResult.Data))
 
 	// Now update schema on an alpha node for group 3 and see if nodes in group 1 and 2 also get it.
@@ -96,17 +121,36 @@ func TestSchemaSubscribe(t *testing.T) {
 	}`
 	updateGQLSchemaRequireNoErrors(t, schema, groupThreeAdminServer)
 
-	expectedResult = `{"__type":{"name":"Author","fields":[{"name":"id"},{"name":"name"},{"name":"posts"}]}}`
-	introspectionResult = introspect.ExecuteAsPost(t, groupOneServer)
-	require.Nil(t, introspectionResult.Errors)
+	expectedResult =
+		`{
+			"__type": {
+				"name": "Author",
+				"fields": [
+					{
+						"name": "id"
+					},
+					{
+						"name": "name"
+					},
+					{
+						"name": "posts"
+					},
+					{
+						"name": "postsAggregate"
+					}
+				]
+			}
+		}`
+	introspectionResult = runIntrospectWithRetryIfNecessary(t, introspect, groupOneServer)
+	requireNoErrors(t, introspectionResult)
 	testutil.CompareJSON(t, expectedResult, string(introspectionResult.Data))
 
-	introspectionResult = introspect.ExecuteAsPost(t, groupTwoServer)
-	require.Nil(t, introspectionResult.Errors)
+	introspectionResult = runIntrospectWithRetryIfNecessary(t, introspect, groupTwoServer)
+	requireNoErrors(t, introspectionResult)
 	testutil.CompareJSON(t, expectedResult, string(introspectionResult.Data))
 
-	introspectionResult = introspect.ExecuteAsPost(t, groupThreeServer)
-	require.Nil(t, introspectionResult.Errors)
+	introspectionResult = runIntrospectWithRetryIfNecessary(t, introspect, groupThreeServer)
+	requireNoErrors(t, introspectionResult)
 	testutil.CompareJSON(t, expectedResult, string(introspectionResult.Data))
 }
 
@@ -218,9 +262,31 @@ func TestConcurrentSchemaUpdates(t *testing.T) {
       		  "exact"
       		],
       		"upsert": true
-        },
-        {
+		},
+		{
+			"predicate":"dgraph.drop.op",
+			"type":"string"
+		},
+		{
+			"predicate":"dgraph.graphql.p_query",
+			"type":"string"
+		},
+		{
+			"predicate":"dgraph.graphql.p_sha256hash",
+			"type":"string",
+			"index":true,
+			"tokenizer":["exact"]
+		},
+		{
             "predicate": "dgraph.graphql.schema",
+            "type": "string"
+		},
+		{
+            "predicate": "dgraph.graphql.schema_created_at",
+            "type": "datetime"
+		},
+        {
+            "predicate": "dgraph.graphql.schema_history",
             "type": "string"
 		},
         {
@@ -260,7 +326,28 @@ func TestConcurrentSchemaUpdates(t *testing.T) {
                 }
             ],
             "name": "dgraph.graphql"
-        }
+        },
+        {
+            "fields": [
+                {
+                    "name": "dgraph.graphql.schema_history"
+                },{
+                    "name": "dgraph.graphql.schema_created_at"
+                }
+            ],
+            "name": "dgraph.graphql.history"
+		},
+		{
+			"fields": [
+				{
+					"name": "dgraph.graphql.p_query"
+				},
+				{
+					"name": "dgraph.graphql.p_sha256hash"
+				}
+			],
+			"name": "dgraph.graphql.persisted_query"
+		}
     ]
 }`, tcases[lastSuccessTcaseIdx].dgraphSchema)
 	finalGraphQLSchema := tcases[lastSuccessTcaseIdx].graphQLSchema
@@ -369,6 +456,105 @@ func TestGQLSchemaAfterDropData(t *testing.T) {
 
 }
 
+// TestSchemaHistory checks the admin schema history API working properly or not.
+func TestSchemaHistory(t *testing.T) {
+	// Drop all to remove all the previous schema history.
+	dg, err := testutil.DgraphClient(groupOnegRPC)
+	require.NoError(t, err)
+	require.NoError(t, dg.Alter(context.Background(), &api.Operation{DropOp: api.Operation_DATA, RunInBackground: false}))
+
+	// Let's get the schema. It should return empty results.
+	get := &common.GraphQLParams{
+		Query: `query{
+			querySchemaHistory(first:10){
+			  schema
+			  created_at
+			}
+		  }`,
+	}
+	getResult := get.ExecuteAsPost(t, groupOneAdminServer)
+	require.Nil(t, getResult.Errors)
+
+	require.JSONEq(t, `{
+		"querySchemaHistory": []
+	  }`, string(getResult.Data))
+
+	// Let's add an schema and expect the history in the history api.
+	updateGQLSchemaRequireNoErrors(t, `
+	type A {
+		b: String!
+	}`, groupOneAdminServer)
+	time.Sleep(time.Second)
+
+	getResult = get.ExecuteAsPost(t, groupOneAdminServer)
+	require.Nil(t, getResult.Errors)
+	type History struct {
+		Schema    string `json:"schema"`
+		CreatedAt string `json:"created_at"`
+	}
+	type schemaHistory struct {
+		QuerySchemaHistory []History `json:"querySchemaHistory"`
+	}
+	history := schemaHistory{}
+	require.NoError(t, json.Unmarshal(getResult.Data, &history))
+	require.Equal(t, int(1), len(history.QuerySchemaHistory))
+	require.Equal(t, history.QuerySchemaHistory[0].Schema, "\n\ttype A {\n\t\tb: String!\n\t}")
+
+	// Let's update the same schema. But we should not get the 2 history because, we
+	// are updating the same schema.
+	updateGQLSchemaRequireNoErrors(t, `
+	type A {
+		b: String!
+	}`, groupOneAdminServer)
+	time.Sleep(time.Second)
+
+	getResult = get.ExecuteAsPost(t, groupOneAdminServer)
+	require.Nil(t, getResult.Errors)
+	history = schemaHistory{}
+	require.NoError(t, json.Unmarshal(getResult.Data, &history))
+	require.Equal(t, int(1), len(history.QuerySchemaHistory))
+	require.Equal(t, history.QuerySchemaHistory[0].Schema, "\n\ttype A {\n\t\tb: String!\n\t}")
+
+	// Let's update a new schema and check the history.
+	updateGQLSchemaRequireNoErrors(t, `
+	type B {
+		b: String!
+	}`, groupOneAdminServer)
+	time.Sleep(time.Second)
+
+	getResult = get.ExecuteAsPost(t, groupOneAdminServer)
+	require.Nil(t, getResult.Errors)
+	history = schemaHistory{}
+	require.NoError(t, json.Unmarshal(getResult.Data, &history))
+	require.Equal(t, int(2), len(history.QuerySchemaHistory))
+	require.Equal(t, history.QuerySchemaHistory[0].Schema, "\n\ttype B {\n\t\tb: String!\n\t}")
+	require.Equal(t, history.QuerySchemaHistory[1].Schema, "\n\ttype A {\n\t\tb: String!\n\t}")
+
+	// Check offset working properly or not.
+	get = &common.GraphQLParams{
+		Query: `query{
+			querySchemaHistory(first:10, offset:1){
+			  schema
+			  created_at
+			}
+		  }`,
+	}
+	getResult = get.ExecuteAsPost(t, groupOneAdminServer)
+	require.Nil(t, getResult.Errors)
+	history = schemaHistory{}
+	require.NoError(t, json.Unmarshal(getResult.Data, &history))
+	require.Equal(t, int(1), len(history.QuerySchemaHistory))
+	require.Equal(t, history.QuerySchemaHistory[0].Schema, "\n\ttype A {\n\t\tb: String!\n\t}")
+
+	// Let's drop eveything and see whether we getting empty results are not.
+	require.NoError(t, dg.Alter(context.Background(), &api.Operation{DropOp: api.Operation_DATA, RunInBackground: false}))
+	getResult = get.ExecuteAsPost(t, groupOneAdminServer)
+	require.Nil(t, getResult.Errors)
+	require.JSONEq(t, `{
+		"querySchemaHistory": []
+	  }`, string(getResult.Data))
+}
+
 // verifyEmptySchema verifies that the schema is not set in the GraphQL server.
 func verifyEmptySchema(t *testing.T) {
 	schema := getGQLSchema(t, groupOneAdminServer)
@@ -390,7 +576,7 @@ func TestGQLSchemaValidate(t *testing.T) {
 					name: String!
 					occurrences: [TaskOccurrence] @hasInverse(field: task)
 				}
-				
+
 				type TaskOccurrence @auth(
 					query: { rule: "query { queryTaskOccurrence { task { id } } }" }
 				) {
@@ -486,24 +672,111 @@ func TestUpdateGQLSchemaFields(t *testing.T) {
 	require.Equal(t, string(generatedSchema), updateResp.UpdateGQLSchema.GQLSchema.GeneratedSchema)
 }
 
+func TestIntrospection(t *testing.T) {
+	// note that both the types implement the same interface and have a field called `name`, which
+	// has exact same name as a field in full introspection query.
+	schema := `
+	interface Node {
+		id: ID!
+	}
+
+	type Human implements Node {
+		name: String
+	}
+
+	type Dog implements Node {
+		name: String
+	}`
+	updateGQLSchemaRequireNoErrors(t, schema, groupOneAdminServer)
+	query, err := ioutil.ReadFile("../../schema/testdata/introspection/input/full_query.graphql")
+	require.NoError(t, err)
+
+	introspectionParams := &common.GraphQLParams{Query: string(query)}
+	resp := introspectionParams.ExecuteAsPost(t, groupOneServer)
+
+	// checking that there are no errors in the response, i.e., we always get some data in the
+	// introspection response.
+	require.Nilf(t, resp.Errors, "%s", resp.Errors)
+	require.NotEmpty(t, resp.Data)
+	// TODO: we should actually compare data here, but there seems to be some issue with either the
+	// introspection response or the JSON comparison. Needs deeper looking.
+}
+
+func TestDeleteSchemaAndExport(t *testing.T) {
+	// first apply a schema
+	schema := `
+	type Person {
+		name: String
+	}`
+	schemaResp := updateGQLSchemaReturnSchema(t, schema, groupOneAdminServer)
+
+	// now delete it with S * * delete mutation
+	dg, err := testutil.DgraphClient(groupOnegRPC)
+	require.NoError(t, err)
+	txn := dg.NewTxn()
+	_, err = txn.Mutate(context.Background(), &api.Mutation{
+		DelNquads: []byte(fmt.Sprintf("<%s> * * .", schemaResp.Id)),
+	})
+	require.NoError(t, err)
+	require.NoError(t, txn.Commit(context.Background()))
+
+	// running an export shouldn't give any errors
+	exportReq := &common.GraphQLParams{
+		Query: `mutation {
+		  export(input: {format: "rdf"}) {
+			exportedFiles
+		  }
+		}`,
+	}
+	exportGqlResp := exportReq.ExecuteAsPost(t, groupOneAdminServer)
+	common.RequireNoGQLErrors(t, exportGqlResp)
+
+	// applying a new schema should still work
+	newSchemaResp := updateGQLSchemaReturnSchema(t, schema, groupOneAdminServer)
+	// we can assert that the uid allocated to new schema isn't same as the uid for old schema
+	require.NotEqual(t, schemaResp.Id, newSchemaResp.Id)
+}
+
 func updateGQLSchema(t *testing.T, schema, url string) *common.GraphQLResponse {
-	req := &common.GraphQLParams{
-		Query: `mutation updateGQLSchema($sch: String!) {
+	var resp *common.GraphQLResponse
+	for i := 0; i < 10; i++ {
+		req := &common.GraphQLParams{
+			Query: `mutation updateGQLSchema($sch: String!) {
 			updateGQLSchema(input: { set: { schema: $sch }}) {
 				gqlSchema {
+					id
 					schema
 				}
 			}
 		}`,
-		Variables: map[string]interface{}{"sch": schema},
+			Variables: map[string]interface{}{"sch": schema},
+		}
+		resp = req.ExecuteAsPost(t, url)
+		if resp == nil || strings.Contains(resp.Errors.Error(), "server not ready") {
+			time.Sleep(time.Second)
+			continue
+		}
 	}
-	resp := req.ExecuteAsPost(t, url)
 	require.NotNil(t, resp)
 	return resp
 }
 
 func updateGQLSchemaRequireNoErrors(t *testing.T, schema, url string) {
-	require.Nil(t, updateGQLSchema(t, schema, url).Errors)
+	resp := updateGQLSchema(t, schema, url)
+	requireNoErrors(t, resp)
+}
+
+func updateGQLSchemaReturnSchema(t *testing.T, schema, url string) gqlSchema {
+	resp := updateGQLSchema(t, schema, url)
+	require.Nil(t, resp.Errors)
+
+	var updateResp struct {
+		UpdateGQLSchema struct {
+			GqlSchema gqlSchema
+		}
+	}
+	require.NoError(t, json.Unmarshal(resp.Data, &updateResp))
+	return updateResp.UpdateGQLSchema.GqlSchema
 }
 
 func updateGQLSchemaConcurrent(t *testing.T, schema, url string) bool {
@@ -551,4 +824,26 @@ func getDgraphSchema(t *testing.T, dg *dgo.Dgraph) string {
 	require.NoError(t, err)
 
 	return string(resp.GetJson())
+}
+
+func runIntrospectWithRetryIfNecessary(t *testing.T, query *common.GraphQLParams, url string) *common.GraphQLResponse {
+	var response *common.GraphQLResponse
+	for i := 0; i < 10; i++ {
+		response = query.ExecuteAsPost(t, url)
+		if response.Errors == nil || !strings.Contains(response.Errors.Error(), "There's no GraphQL schema in Dgraph.") {
+			return response
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	return response
+}
+
+func TestMain(m *testing.M) {
+	err := common.CheckGraphQLStarted(common.GraphqlAdminURL)
+	if err != nil {
+		x.Log(err, "Waited for GraphQL test server to become available, but it never did.")
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
 }
