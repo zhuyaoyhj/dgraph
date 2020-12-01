@@ -48,29 +48,31 @@ import (
 )
 
 type options struct {
-	DataFiles        string
-	DataFormat       string
-	SchemaFile       string
-	GqlSchemaFile    string
-	OutDir           string
-	ReplaceOutDir    bool
-	TmpDir           string
-	NumGoroutines    int
-	MapBufSize       uint64
-	PartitionBufSize int64
-	SkipMapPhase     bool
-	CleanupTmp       bool
-	NumReducers      int
-	Version          bool
-	StoreXids        bool
-	ZeroAddr         string
-	HttpAddr         string
-	IgnoreErrors     bool
-	CustomTokenizers string
-	NewUids          bool
-	ClientDir        string
-	Encrypted        bool
-	EncryptedOut     bool
+	DataFiles              string
+	DataFormat             string
+	SchemaFile             string
+	GqlSchemaFile          string
+	OutDir                 string
+	ReplaceOutDir          bool
+	TmpDir                 string
+	NumGoroutines          int
+	MapBufSize             uint64
+	PartitionBufSize       int64
+	SkipMapPhase           bool
+	CleanupTmp             bool
+	NumReducers            int
+	Version                bool
+	StoreXids              bool
+	ZeroAddr               string
+	HttpAddr               string
+	IgnoreErrors           bool
+	CustomTokenizers       string
+	NewUids                bool
+	ClientDir              string
+	Encrypted              bool
+	EncryptedOut           bool
+	RemoveInconsistentData bool
+	LangTagsAppend         bool
 
 	MapShards    int
 	ReduceShards int

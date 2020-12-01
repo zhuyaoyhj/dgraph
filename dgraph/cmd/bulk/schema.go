@@ -18,8 +18,10 @@ package bulk
 
 import (
 	"fmt"
+	"github.com/dgraph-io/dgraph/types"
 	"log"
 	"math"
+	"strings"
 	"sync"
 
 	"github.com/dgraph-io/badger/v2"
@@ -93,7 +95,13 @@ func (s *schemaStore) setSchemaAsList(pred string) {
 	sch.List = true
 }
 
-func (s *schemaStore) validateType(de *pb.DirectedEdge, objectIsUID bool) {
+//return value of function validate for remove removeIncosistentData
+const (
+	Datatypeincosistent = "data and schema type incosistent"
+	ValidateTypesuccess = "type correct"
+)
+
+func (s *schemaStore) validateType(de *pb.DirectedEdge, objectIsUID bool, AppendLangTags bool, RemoveInconsistentData bool) string {
 	if objectIsUID {
 		de.ValueType = pb.Posting_UID
 	}
@@ -114,10 +122,38 @@ func (s *schemaStore) validateType(de *pb.DirectedEdge, objectIsUID bool) {
 		s.Unlock()
 	}
 
-	err := wk.ValidateAndConvert(de, sch)
-	if err != nil {
-		log.Fatalf("RDF doesn't match schema: %v", err)
+	var err error
+	if AppendLangTags {
+		err = wk.ValidateAndConvertAppendLangTags(de, sch)
+	} else {
+		err = wk.ValidateAndConvert(de, sch)
 	}
+
+	if err != nil {
+		//yhj-code
+		if RemoveInconsistentData {
+			if strings.Contains(err.Error(), "Input for predicate") && strings.Contains(err.Error(), "of type uid is scalar") {
+				fmt.Printf("RemoveInconsistentData! inconsistent type between rdf data and schema. err = %v \n", err)
+				return Datatypeincosistent
+			} else if strings.Contains(err.Error(), "Input for predicate") && strings.Contains(err.Error(), "of type scalar is uid. Edge") {
+				fmt.Printf("RemoveInconsistentData! inconsistent type between rdf data and schema. err = %v \n", err)
+				return Datatypeincosistent
+			} else {
+
+				log.Fatalf("RDF doesn't match schema: %v, edge info: %v, edge type: %v, schema type: %v", err, de, posting.TypeID(de), types.TypeID(sch.ValueType))
+			}
+		} else {
+			log.Fatalf("RDF doesn't match schema: %v", err)
+		}
+
+		//en
+		//log.Fatalf("RDF doesn't match schema: %v", err)
+	}
+	return ValidateTypesuccess
+	//err := wk.ValidateAndConvert(de, sch)
+	//if err != nil {
+	//	log.Fatalf("RDF doesn't match schema: %v", err)
+	//}
 }
 
 func (s *schemaStore) getPredicates(db *badger.DB) []string {
@@ -160,6 +196,66 @@ func (s *schemaStore) write(db *badger.DB, preds []string) {
 		// if bulk loader was restarted or other similar scenarios.
 		x.Check(w.SetAt(k, v, posting.BitSchemaPosting, 1))
 	}
+
+	//yhj-code create schemaorg:Thing type
+	var typsTemp []*pb.TypeUpdate
+	for _, typ := range s.types {
+		var thingSystem = &pb.TypeUpdate{
+			TypeName: typ.TypeName,
+		}
+		var typePredMap = make(map[string]struct{})
+
+		for _, pred := range typ.Fields {
+			if strings.Contains(pred.Predicate, "dgraph") {
+				continue
+			}
+			if _, ok := typePredMap[pred.Predicate]; ok {
+				continue
+			}
+			schema := &pb.SchemaUpdate{Predicate: pred.Predicate}
+			thingSystem.Fields = append(thingSystem.Fields, schema)
+			typePredMap[pred.Predicate] = struct{}{}
+		}
+
+		for pred, updateSchema := range s.schemaMap {
+			if strings.Contains(pred, "dgraph") {
+				continue
+			}
+			if updateSchema.Directive == pb.SchemaUpdate_REVERSE {
+				predd := "~" + pred
+				schema := &pb.SchemaUpdate{Predicate: predd}
+				thingSystem.Fields = append(thingSystem.Fields, schema)
+				typePredMap[predd] = struct{}{}
+			}
+			if _, ok := typePredMap[pred]; ok {
+				continue
+			}
+			schema := &pb.SchemaUpdate{Predicate: pred}
+			thingSystem.Fields = append(thingSystem.Fields, schema)
+			typePredMap[pred] = struct{}{}
+		}
+		typsTemp = append(typsTemp, thingSystem)
+	}
+	//fmt.Println("origin")
+	//for _, v := range s.types {
+	//	fmt.Println(v.TypeName)
+	//	for _, vf := range v.Fields {
+	//		temp, err := vf.Marshal()
+	//		fmt.Println(string(temp), err)
+	//	}
+	//}
+
+	s.types = typsTemp
+	//fmt.Println("new")
+	//for _, v := range s.types {
+	//	fmt.Println(v.TypeName)
+	//	for _, vf := range v.Fields {
+	//		temp, err := vf.Marshal()
+	//		fmt.Println(string(temp), err)
+	//	}
+	//}
+	//s.types = append(s.types, typsTemp...)
+	//yhj-code end
 
 	// Write all the types as all groups should have access to all the types.
 	for _, typ := range s.types {
