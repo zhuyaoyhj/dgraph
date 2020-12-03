@@ -52,8 +52,8 @@ func init() {
 	Bulk.EnvPrefix = "DGRAPH_BULK"
 
 	flag := Bulk.Cmd.Flags()
-	flag.Bool("append_langtags", false, "Automatically add langtags(@lang) to predicate based on data")
-	flag.Bool("remove_inconsistent_data", false, "Automatically delete rdf that does not match in the data according to schema")
+	flag.Bool("append_langtags", true, "Automatically add langtags(@lang) to predicate based on data")
+	flag.Bool("remove_inconsistent_data", true, "Automatically delete rdf that does not match in the data according to schema")
 	flag.StringP("files", "f", "",
 		"Location of *.rdf(.gz) or *.json(.gz) file(s) to load.")
 	flag.StringP("schema", "s", "",
