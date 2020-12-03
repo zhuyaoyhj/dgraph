@@ -144,7 +144,8 @@ func (s *schemaStore) validateType(de *pb.DirectedEdge, objectIsUID bool, Append
 				//log.Fatalf("RDF doesn't match schema: %v, edge info: %v, edge type: %v, schema type: %v", err, de, posting.TypeID(de), types.TypeID(sch.ValueType))
 			}
 		} else {
-			log.Fatalf("RDF doesn't match schema: %v", err)
+			fmt.Printf("RDF doesn't match schema: %v", err)
+			return Datatypeincosistent
 		}
 		//log.Fatalf("RDF doesn't match schema: %v", err)
 	}
