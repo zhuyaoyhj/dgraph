@@ -372,7 +372,7 @@ func (m *mapper) lookupUid(xid string) uint64 {
 func (m *mapper) createPostings(nq gql.NQuad,
 	de *pb.DirectedEdge) (*pb.Posting, *pb.Posting) {
 	//yhj-code
-	if m.schema.validateType(de, nq.ObjectValue == nil, m.opt.LangTagsAppend, m.opt.RemoveInconsistentData) == Datatypeincosistent {
+	if m.schema.validateType(de, nq.ObjectValue == nil, true, true) == Datatypeincosistent {
 		return nil, nil
 	}
 	//end
@@ -402,7 +402,7 @@ func (m *mapper) createPostings(nq gql.NQuad,
 	x.AssertTruef(nq.GetObjectValue() == nil, "only has reverse schema if object is UID")
 	de.Entity, de.ValueId = de.ValueId, de.Entity
 	//yhj-code
-	if m.schema.validateType(de, true, m.opt.LangTagsAppend, m.opt.RemoveInconsistentData) == Datatypeincosistent {
+	if m.schema.validateType(de, true, true, true) == Datatypeincosistent {
 		return nil, nil
 	}
 	//end
