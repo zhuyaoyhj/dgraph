@@ -157,6 +157,8 @@ func run() {
 		BadgerCompression:      ctype,
 		BadgerCompressionLevel: clevel,
 	}
+	fmt.Println("remove", opt.RemoveInconsistentData)
+	fmt.Println("langtag", opt.LangTagsAppend)
 
 	x.PrintVersion()
 	if opt.Version {

@@ -105,7 +105,8 @@ func (s *schemaStore) validateType(de *pb.DirectedEdge, objectIsUID bool, Append
 	if objectIsUID {
 		de.ValueType = pb.Posting_UID
 	}
-
+	fmt.Println("remove", RemoveInconsistentData)
+	fmt.Println("langtag", AppendLangTags)
 	s.RLock()
 	sch, ok := s.schemaMap[de.Attr]
 	s.RUnlock()
