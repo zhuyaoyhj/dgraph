@@ -439,19 +439,33 @@ func runKShortestPaths(ctx context.Context, sg *SubGraph) ([]*SubGraph, error) {
 				// Use the curPath from pathPool. Set length appropriately.
 				*curPath = (*curPath)[:len(*item.path.route)+1]
 			}
-			n := copy(*curPath, *item.path.route)
-			(*curPath)[n] = pathInfo{
-				uid:   toUid,
-				attr:  info.attr,
-				facet: info.facet,
+			//yhj-code modify skip node in the queue
+			var skipflag = false
+			for _, v := range *curPath {
+				if toUid == v.uid {
+					skipflag = true
+					break
+				}
 			}
-			node := &queueItem{
-				uid:  toUid,
-				cost: item.cost + cost,
-				hop:  item.hop + 1,
-				path: route{route: curPath},
+
+			if skipflag {
+				continue
+			} else {
+				n := copy(*curPath, *item.path.route)
+				(*curPath)[n] = pathInfo{
+					uid:   toUid,
+					attr:  info.attr,
+					facet: info.facet,
+				}
+				node := &queueItem{
+					uid:  toUid,
+					cost: item.cost + cost,
+					hop:  item.hop + 1,
+					path: route{route: curPath},
+				}
+				heap.Push(&pq, node)
 			}
-			heap.Push(&pq, node)
+			//yhj-code end
 		}
 		// Return the popped nodes path to pool.
 		pathPool.Put(item.path.route)
