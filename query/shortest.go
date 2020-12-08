@@ -441,7 +441,7 @@ func runKShortestPaths(ctx context.Context, sg *SubGraph) ([]*SubGraph, error) {
 			}
 			//yhj-code modify skip node in the queue
 			var skipflag = false
-			for _, v := range *curPath {
+			for _, v := range *item.path.route {
 				if toUid == v.uid {
 					skipflag = true
 					break
