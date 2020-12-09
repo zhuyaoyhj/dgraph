@@ -1044,7 +1044,7 @@ func (s *Server) doQuery(ctx context.Context, req *api.Request, doAuth AuthMode)
 		EncodingNs:        uint64(l.Json.Nanoseconds()),
 		TotalNs:           uint64((time.Since(l.Start)).Nanoseconds()),
 	}
-
+	glog.Infof("request=%s response=%s costTime=%s msg=mutate end", req.Query, resp.String(), resp.Latency.String())
 	return resp, nil
 }
 

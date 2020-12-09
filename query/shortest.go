@@ -19,6 +19,7 @@ package query
 import (
 	"container/heap"
 	"context"
+	"github.com/dgraph-io/dgo/v200/protos/api"
 	"math"
 	"sync"
 
@@ -112,7 +113,7 @@ type nodeInfo struct {
 	node *queueItem
 }
 
-func (sg *SubGraph) getCost(matrix, list int) (cost float64,
+func (sg *SubGraph) getCost(matrix, list int, fp shortestPathFacetsParam) (cost float64,
 	fcs *pb.Facets, rerr error) {
 
 	cost = 1.0
@@ -129,11 +130,29 @@ func (sg *SubGraph) getCost(matrix, list int) (cost float64,
 		rerr = errFacet
 		return cost, fcs, rerr
 	}
-	if len(fcs.Facets) > 1 {
-		rerr = errors.Errorf("Expected 1 but got %d facets", len(fcs.Facets))
+	//if len(fcs.Facets) > 1 {
+	//	rerr = errors.Errorf("Expected 1 but got %d facets", len(fcs.Facets))
+	//	return cost, fcs, rerr
+	//}
+	//tv, err := facets.ValFor(fcs.Facets[0])
+	//yhj-code remove facets len judgement
+	if fp.AllKeys == true {
+		//if len(fcs.Facets) > 1 {
+		//rerr = errors.Errorf("Expected 1 but got %d facets", len(fcs.Facets))
 		return cost, fcs, rerr
 	}
-	tv, err := facets.ValFor(fcs.Facets[0])
+	var facFacet *api.Facet
+	for _, v := range fcs.Facets {
+		if v.Key == fp.FacetsParam {
+			facFacet = v
+		}
+	}
+	if facFacet == nil {
+		facFacet = fcs.Facets[0]
+	}
+
+	tv, err := facets.ValFor(facFacet /*fcs.Facets[0]*/)
+	//yhj-code end
 	if err != nil {
 		return 0.0, nil, err
 	}
@@ -147,6 +166,14 @@ func (sg *SubGraph) getCost(matrix, list int) (cost float64,
 	}
 	return cost, fcs, rerr
 }
+
+//yhj-code params
+type shortestPathFacetsParam struct {
+	FacetsParam string
+	AllKeys     bool
+}
+
+//yhj-code end
 
 func (sg *SubGraph) expandOut(ctx context.Context,
 	adjacencyMap map[uint64]map[uint64]mapItem, next chan bool, rch chan error) {
@@ -169,8 +196,29 @@ func (sg *SubGraph) expandOut(ctx context.Context,
 		if !isNext {
 			return
 		}
+		//yhj-code
+		var fp = shortestPathFacetsParam{
+			AllKeys:     false,
+			FacetsParam: "",
+		}
+		//yhj-code end
 		rrch := make(chan error, len(exec))
 		for _, subgraph := range exec {
+			//yhj-code
+			if subgraph.Params.Facet != nil && subgraph.Params.Facet.AllKeys == false {
+				fp.FacetsParam = subgraph.Params.Facet.Param[0].Key
+				subgraph.Params.Facet.AllKeys = true
+			} else {
+				fp.AllKeys = true
+			}
+			//yhj-code end
+			//fmt.Println("test start")
+			//fmt.Println(subgraph.Attr)
+			//fmt.Println(subgraph.Params.Facet.AllKeys)
+			//for i, k := range subgraph.Params.Facet.Param {
+			//	fmt.Println(i, k.Alias, k.Key)
+			//}
+			//fmt.Println("test end")
 			go ProcessGraph(ctx, subgraph, dummy, rrch)
 		}
 
@@ -215,7 +263,7 @@ func (sg *SubGraph) expandOut(ctx context.Context,
 							adjacencyMap[fromUID] = make(map[uint64]mapItem)
 						}
 						// The default cost we'd use is 1.
-						cost, facet, err := subgraph.getCost(mIdx, lIdx)
+						cost, facet, err := subgraph.getCost(mIdx, lIdx, fp)
 						switch {
 						case err == errFacet:
 							// Ignore the edge and continue.
@@ -353,6 +401,9 @@ func runKShortestPaths(ctx context.Context, sg *SubGraph) ([]*SubGraph, error) {
 				// We found the required number of paths.
 				break
 			}
+			//yhj-code 跳过最终终点，不将其放入优先队列中
+			continue
+			//yhj-code end
 		}
 		if item.hop > numHops-1 && numHops < maxHops {
 			// Explore the next level by calling processGraph and add them
@@ -403,20 +454,49 @@ func runKShortestPaths(ctx context.Context, sg *SubGraph) ([]*SubGraph, error) {
 				// Use the curPath from pathPool. Set length appropriately.
 				*curPath = (*curPath)[:len(*item.path.route)+1]
 			}
-			n := copy(*curPath, *item.path.route)
-			(*curPath)[n] = pathInfo{
-				uid:   toUid,
-				attr:  info.attr,
-				facet: info.facet,
+
+			//yhj-code modify skip node in the queue
+			var skipflag = false
+			for _, v := range *item.path.route {
+				if toUid == v.uid {
+					skipflag = true
+					break
+				}
 			}
-			node := &queueItem{
-				uid:  toUid,
-				cost: item.cost + cost,
-				hop:  item.hop + 1,
-				path: route{route: curPath},
+
+			if skipflag {
+				continue
+			} else {
+				n := copy(*curPath, *item.path.route)
+				(*curPath)[n] = pathInfo{
+					uid:   toUid,
+					attr:  info.attr,
+					facet: info.facet,
+				}
+				node := &queueItem{
+					uid:  toUid,
+					cost: item.cost + cost,
+					hop:  item.hop + 1,
+					path: route{route: curPath},
+				}
+				heap.Push(&pq, node)
 			}
-			heap.Push(&pq, node)
+			//yhj-code end
 		}
+		//	n := copy(*curPath, *item.path.route)
+		//	(*curPath)[n] = pathInfo{
+		//		uid:   toUid,
+		//		attr:  info.attr,
+		//		facet: info.facet,
+		//	}
+		//	node := &queueItem{
+		//		uid:  toUid,
+		//		cost: item.cost + cost,
+		//		hop:  item.hop + 1,
+		//		path: route{route: curPath},
+		//	}
+		//	heap.Push(&pq, node)
+		//}
 		// Return the popped nodes path to pool.
 		pathPool.Put(item.path.route)
 	}
