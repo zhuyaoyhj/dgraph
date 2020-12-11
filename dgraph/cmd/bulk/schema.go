@@ -203,7 +203,8 @@ func (s *schemaStore) write(db *badger.DB, preds []string) {
 		var typePredMap = make(map[string]struct{})
 
 		for _, pred := range typ.Fields {
-			if strings.Contains(pred.Predicate, "dgraph") {
+			//只加入schemaorg和kgsogou的属性
+			if strings.Contains(pred.Predicate, "dgraph") || !strings.Contains(pred.Predicate, "schemaorg") || !strings.Contains(pred.Predicate, "kgsogou") {
 				continue
 			}
 			if _, ok := typePredMap[pred.Predicate]; ok {
@@ -214,16 +215,16 @@ func (s *schemaStore) write(db *badger.DB, preds []string) {
 			typePredMap[pred.Predicate] = struct{}{}
 		}
 
-		for pred, updateSchema := range s.schemaMap {
-			if strings.Contains(pred, "dgraph") {
+		for pred, _ := range s.schemaMap {
+			if strings.Contains(pred, "dgraph") || !strings.Contains(pred, "schemaorg") || !strings.Contains(pred, "kgsogou") {
 				continue
 			}
-			if updateSchema.Directive == pb.SchemaUpdate_REVERSE {
-				predd := "~" + pred
-				schema := &pb.SchemaUpdate{Predicate: predd}
-				thingSystem.Fields = append(thingSystem.Fields, schema)
-				typePredMap[predd] = struct{}{}
-			}
+			//if updateSchema.Directive == pb.SchemaUpdate_REVERSE {
+			//	predd := "~" + pred
+			//	schema := &pb.SchemaUpdate{Predicate: predd}
+			//	thingSystem.Fields = append(thingSystem.Fields, schema)
+			//	typePredMap[predd] = struct{}{}
+			//}
 			if _, ok := typePredMap[pred]; ok {
 				continue
 			}
