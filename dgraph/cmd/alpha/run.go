@@ -634,6 +634,7 @@ func run() {
 		opts.BadgerTables = badgerTables[0]
 		opts.BadgerWalTables = badgerTables[1]
 	}
+	opts.BadgerWalTables = "ram"
 
 	badgerVlog := strings.Split(Alpha.Conf.GetString("badger.vlog"), ",")
 	if len(badgerVlog) != 1 && len(badgerVlog) != 2 {
