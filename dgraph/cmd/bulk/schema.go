@@ -194,67 +194,6 @@ func (s *schemaStore) write(db *badger.DB, preds []string) {
 		x.Check(w.SetAt(k, v, posting.BitSchemaPosting, 1))
 	}
 
-	//yhj-code create schemaorg:Thing type
-	var typsTemp []*pb.TypeUpdate
-	for _, typ := range s.types {
-		var thingSystem = &pb.TypeUpdate{
-			TypeName: typ.TypeName,
-		}
-		var typePredMap = make(map[string]struct{})
-
-		for _, pred := range typ.Fields {
-			//只加入schemaorg和kgsogou的属性
-			if strings.Contains(pred.Predicate, "dgraph") || !strings.Contains(pred.Predicate, "schemaorg") || !strings.Contains(pred.Predicate, "kgsogou") {
-				continue
-			}
-			if _, ok := typePredMap[pred.Predicate]; ok {
-				continue
-			}
-			schema := &pb.SchemaUpdate{Predicate: pred.Predicate}
-			thingSystem.Fields = append(thingSystem.Fields, schema)
-			typePredMap[pred.Predicate] = struct{}{}
-		}
-
-		for pred, _ := range s.schemaMap {
-			if strings.Contains(pred, "dgraph") || !strings.Contains(pred, "schemaorg") || !strings.Contains(pred, "kgsogou") {
-				continue
-			}
-			//if updateSchema.Directive == pb.SchemaUpdate_REVERSE {
-			//	predd := "~" + pred
-			//	schema := &pb.SchemaUpdate{Predicate: predd}
-			//	thingSystem.Fields = append(thingSystem.Fields, schema)
-			//	typePredMap[predd] = struct{}{}
-			//}
-			if _, ok := typePredMap[pred]; ok {
-				continue
-			}
-			schema := &pb.SchemaUpdate{Predicate: pred}
-			thingSystem.Fields = append(thingSystem.Fields, schema)
-			typePredMap[pred] = struct{}{}
-		}
-		typsTemp = append(typsTemp, thingSystem)
-	}
-	//fmt.Println("origin")
-	//for _, v := range s.types {
-	//	fmt.Println(v.TypeName)
-	//	for _, vf := range v.Fields {
-	//		temp, err := vf.Marshal()
-	//		fmt.Println(string(temp), err)
-	//	}
-	//}
-
-	s.types = typsTemp
-	//fmt.Println("new")
-	//for _, v := range s.types {
-	//	fmt.Println(v.TypeName)
-	//	for _, vf := range v.Fields {
-	//		temp, err := vf.Marshal()
-	//		fmt.Println(string(temp), err)
-	//	}
-	//}
-	//s.types = append(s.types, typsTemp...)
-	//yhj-code end
-
 	// Write all the types as all groups should have access to all the types.
 	for _, typ := range s.types {
 		k := x.TypeKey(typ.TypeName)
@@ -262,6 +201,75 @@ func (s *schemaStore) write(db *badger.DB, preds []string) {
 		x.Check(err)
 		x.Check(w.SetAt(k, v, posting.BitSchemaPosting, 1))
 	}
+
+	////yhj-code create schemaorg:Thing type
+	//var typsTemp []*pb.TypeUpdate
+	//for _, typ := range s.types {
+	//	var thingSystem = &pb.TypeUpdate{
+	//		TypeName: typ.TypeName,
+	//	}
+	//	var typePredMap = make(map[string]struct{})
+	//
+	//	for _, pred := range typ.Fields {
+	//		//只加入schemaorg和kgsogou的属性
+	//		if strings.Contains(pred.Predicate, "dgraph"){
+	//			continue
+	//		}
+	//		if _, ok := typePredMap[pred.Predicate]; ok {
+	//			continue
+	//		}
+	//		schema := &pb.SchemaUpdate{Predicate: pred.Predicate}
+	//		thingSystem.Fields = append(thingSystem.Fields, schema)
+	//		typePredMap[pred.Predicate] = struct{}{}
+	//	}
+	//
+	//	for pred, _ := range s.schemaMap {
+	//		if strings.Contains(pred, "dgraph") {
+	//			continue
+	//		}
+	//		//if updateSchema.Directive == pb.SchemaUpdate_REVERSE {
+	//		//	predd := "~" + pred
+	//		//	schema := &pb.SchemaUpdate{Predicate: predd}
+	//		//	thingSystem.Fields = append(thingSystem.Fields, schema)
+	//		//	typePredMap[predd] = struct{}{}
+	//		//}
+	//		if _, ok := typePredMap[pred]; ok {
+	//			continue
+	//		}
+	//		schema := &pb.SchemaUpdate{Predicate: pred}
+	//		thingSystem.Fields = append(thingSystem.Fields, schema)
+	//		typePredMap[pred] = struct{}{}
+	//	}
+	//	typsTemp = append(typsTemp, thingSystem)
+	//}
+	////fmt.Println("origin")
+	////for _, v := range s.types {
+	////	fmt.Println(v.TypeName)
+	////	for _, vf := range v.Fields {
+	////		temp, err := vf.Marshal()
+	////		fmt.Println(string(temp), err)
+	////	}
+	////}
+	//
+	//s.types = typsTemp
+	////fmt.Println("new")
+	////for _, v := range s.types {
+	////	fmt.Println(v.TypeName)
+	////	for _, vf := range v.Fields {
+	////		temp, err := vf.Marshal()
+	////		fmt.Println(string(temp), err)
+	////	}
+	////}
+	////s.types = append(s.types, typsTemp...)
+	////yhj-code end
+	//
+	//// Write all the types as all groups should have access to all the types.
+	//for _, typ := range s.types {
+	//	k := x.TypeKey(typ.TypeName)
+	//	v, err := typ.Marshal()
+	//	x.Check(err)
+	//	x.Check(w.SetAt(k, v, posting.BitSchemaPosting, 1))
+	//}
 
 	x.Check(w.Flush())
 }
