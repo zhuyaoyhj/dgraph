@@ -191,7 +191,7 @@ func queryHandler(w http.ResponseWriter, r *http.Request) {
 
 	default:
 		fmt.Println("conten-type", strings.ToLower(contentType), string(body))
-		x.SetStatus(w, x.ErrorInvalidRequest, "Unsupported Content-Type. "+
+		x.SetStatus(w, x.ErrorInvalidRequest, "Unsupported Content-Type. "+strings.ToLower(contentType)+
 			"Supported content types are application/json, application/graphql+-")
 		return
 	}
@@ -376,7 +376,7 @@ func mutationHandler(w http.ResponseWriter, r *http.Request) {
 
 	default:
 		fmt.Println("conten-type", strings.ToLower(contentType), string(body))
-		x.SetStatus(w, x.ErrorInvalidRequest, "Unsupported Content-Type. "+
+		x.SetStatus(w, x.ErrorInvalidRequest, "Unsupported Content-Type. "+strings.ToLower(contentType)+
 			"Supported content types are application/json, application/rdf")
 		return
 	}
