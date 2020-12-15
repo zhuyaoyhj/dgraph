@@ -21,6 +21,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -189,6 +190,7 @@ func queryHandler(w http.ResponseWriter, r *http.Request) {
 		params.Query = string(body)
 
 	default:
+		fmt.Println("conten-type", strings.ToLower(contentType), string(body))
 		x.SetStatus(w, x.ErrorInvalidRequest, "Unsupported Content-Type. "+
 			"Supported content types are application/json, application/graphql+-")
 		return
@@ -373,6 +375,7 @@ func mutationHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 	default:
+		fmt.Println("conten-type", strings.ToLower(contentType), string(body))
 		x.SetStatus(w, x.ErrorInvalidRequest, "Unsupported Content-Type. "+
 			"Supported content types are application/json, application/rdf")
 		return
