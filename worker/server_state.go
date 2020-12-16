@@ -105,7 +105,7 @@ func setBadgerOptions(opt badger.Options, wal bool) badger.Options {
 		}
 	}
 
-	glog.Infof("Setting Badger table load option: %s", Config.BadgerTables)
+	glog.Infof("Setting Badger table load option: %s", badgerTables /*Config.BadgerTables*/)
 	switch badgerTables {
 	case "mmap":
 		opt.TableLoadingMode = options.MemoryMap
@@ -117,7 +117,7 @@ func setBadgerOptions(opt badger.Options, wal bool) badger.Options {
 		x.Fatalf("Invalid Badger Tables options")
 	}
 
-	glog.Infof("Setting Badger value log load option: %s", Config.BadgerVlog)
+	glog.Infof("Setting Badger value log load option: %s", badgerVlog /*Config.BadgerVlog*/)
 	switch badgerVlog {
 	case "mmap":
 		opt.ValueLogLoadingMode = options.MemoryMap
