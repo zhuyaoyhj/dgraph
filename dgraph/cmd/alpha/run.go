@@ -627,6 +627,7 @@ func run() {
 		glog.Fatalf("Unable to read badger.tables options. Expected single value or two "+
 			"comma-separated values. Got %s", Alpha.Conf.GetString("badger.tables"))
 	}
+	glog.Infof("badger.tables %s", Alpha.Conf.GetString("badger.tables"))
 	if len(badgerTables) == 1 {
 		opts.BadgerTables = badgerTables[0]
 		opts.BadgerWalTables = badgerTables[0]
@@ -640,6 +641,7 @@ func run() {
 		glog.Fatalf("Unable to read badger.vlog options. Expected single value or two "+
 			"comma-separated values. Got %s", Alpha.Conf.GetString("badger.vlog"))
 	}
+	glog.Infof("badger.vlog %s", Alpha.Conf.GetString("badger.vlog"))
 	if len(badgerVlog) == 1 {
 		opts.BadgerVlog = badgerVlog[0]
 		opts.BadgerWalVlog = badgerVlog[0]

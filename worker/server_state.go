@@ -81,7 +81,7 @@ func setBadgerOptions(opt badger.Options, wal bool) badger.Options {
 		// Settings for the write-ahead log.
 		badgerTables = Config.BadgerWalTables
 		badgerVlog = Config.BadgerWalVlog
-
+		glog.Infof("table: %s, vlog: %s", Config.BadgerWalTables, Config.BadgerWalVlog)
 		glog.Infof("Setting WAL Dir Compression Level: %d", Config.WALDirCompressionLevel)
 		// Default value of WALDirCompressionLevel is 0 so compression will always
 		// be disabled, unless it is explicitly enabled by setting the value to greater than 0.
@@ -94,7 +94,7 @@ func setBadgerOptions(opt badger.Options, wal bool) badger.Options {
 		// Settings for the data directory.
 		badgerTables = Config.BadgerTables
 		badgerVlog = Config.BadgerVlog
-
+		glog.Infof("table: %s, vlog: %s", Config.BadgerTables, Config.BadgerVlog)
 		glog.Infof("Setting Posting Dir Compression Level: %d", Config.PostingDirCompressionLevel)
 		// Default value of postingDirCompressionLevel is 3 so compression will always
 		// be enabled, unless it is explicitly disabled by setting the value to 0.
