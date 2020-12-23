@@ -704,6 +704,15 @@ func shortestPath(ctx context.Context, sg *SubGraph) ([]*SubGraph, error) {
 
 func createPathSubgraph(ctx context.Context, dist map[uint64]nodeInfo, totalWeight float64,
 	result []uint64) *SubGraph {
+	//yhj-code for shortest query
+	NewShortestUIDList()
+	for k, v := range dist {
+		ShortestUIDList[k] = struct{}{}
+		if v.parent != 0 {
+			ShortestUIDList[v.parent] = struct{}{}
+		}
+	}
+	//yhj-code end
 	shortestSg := new(SubGraph)
 	shortestSg.Params = params{
 		Alias:    "_path_",
@@ -753,6 +762,14 @@ func createPathSubgraph(ctx context.Context, dist map[uint64]nodeInfo, totalWeig
 }
 
 func createkroutesubgraph(ctx context.Context, kroutes []route) []*SubGraph {
+	//yhj-code get all uid
+	NewShortestUIDList()
+	for _, router := range kroutes {
+		for _, v := range *router.route {
+			ShortestUIDList[v.uid] = struct{}{}
+		}
+	}
+	//end
 	var res []*SubGraph
 	for _, it := range kroutes {
 		shortestSg := new(SubGraph)
@@ -804,3 +821,13 @@ func createkroutesubgraph(ctx context.Context, kroutes []route) []*SubGraph {
 	}
 	return res
 }
+
+//yhj-code for shortest path more query
+var ShortestVar string
+var ShortestUIDList map[uint64]struct{}
+
+func NewShortestUIDList() {
+	ShortestUIDList = make(map[uint64]struct{})
+}
+
+//yhj-code

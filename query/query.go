@@ -1658,7 +1658,19 @@ func (sg *SubGraph) fillVars(mp map[string]varValue) error {
 			sg.ExpandPreds = l.strList
 
 		case (v.Typ == gql.AnyVar || v.Typ == gql.UidVar) && l.Uids != nil:
-			lists = append(lists, l.Uids)
+			//yhj-code for shortest query
+			if v.Name == ShortestVar {
+				var uidList []uint64
+				for uid, _ := range ShortestUIDList {
+					uidList = append(uidList, uid)
+				}
+				lists = append(lists, &pb.List{Uids: uidList})
+			} else {
+				lists = append(lists, l.Uids)
+			}
+			ShortestVar = ""
+			//yhj-code end
+			//lists = append(lists, l.Uids)
 
 		case (v.Typ == gql.AnyVar || v.Typ == gql.ValueVar):
 			// This should happen only once.
@@ -2704,6 +2716,9 @@ func (req *Request) ProcessQuery(ctx context.Context) (err error) {
 			switch {
 			case sg.Params.Alias == "shortest":
 				// We allow only one shortest path block per query.
+				//yhj-code get shortest path var
+				ShortestVar = sg.Params.Var
+				//end
 				go func() {
 					shortestSg, err = shortestPath(ctx, sg)
 					errChan <- err
