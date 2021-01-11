@@ -706,11 +706,11 @@ func createPathSubgraph(ctx context.Context, dist map[uint64]nodeInfo, totalWeig
 	result []uint64) *SubGraph {
 	//yhj-code for shortest query
 	NewShortestUIDList()
-	for k, v := range dist {
-		ShortestUIDList[k] = struct{}{}
-		if v.parent != 0 {
-			ShortestUIDList[v.parent] = struct{}{}
-		}
+	for _, v := range result {
+		ShortestUIDList[v] = struct{}{}
+		//if v.parent != 0 {
+		//	ShortestUIDList[v.parent] = struct{}{}
+		//}
 	}
 	//yhj-code end
 	shortestSg := new(SubGraph)
